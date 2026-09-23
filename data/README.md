@@ -8,7 +8,7 @@ semicolon-optional matching rules. The PSF license is in
 
 SHA-256: `ea49a2b75ac0cd3028224804e1925509528ddadf3271131545b546f740c71192`.
 
-From `ecosystem/markdown/tools`, run `../../../stage2/bin/goml run -- generate ..`
+From `../markdown/tools`, run `../../../goml-dev/stage2/bin/goml run -- generate ..`
 to generate the HTML lookup and Markdown compatibility wrapper; use `check` to
 verify both. The generator validates the checksum, entry count, names and values.
 The HTML library tests also compare every public lookup with this independent data.
