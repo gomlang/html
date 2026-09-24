@@ -61,4 +61,4 @@ with provenance in [data/README.md](data/README.md) and its retained
 `../markdown/tools` generates both this module's lookup and Markdown's compatibility
 wrapper; no Python installation or runtime data file access is required by HTML.
 
-Run `just ecosystem-test html template markdown` from the repository root.
+Run `(cd ../verification && just ecosystem-test html template markdown)` from this library repository.
