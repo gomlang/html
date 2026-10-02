@@ -1,0 +1,16 @@
+package tests;
+
+use ecosystem::html;
+use std::testing;
+
+#[test]
+fn downstream_streaming_attribute_decoding_waits_for_lookahead() -> () {
+    let stream = testing::expect_ok(
+        html::Decoder::new(html::DecodeContext::Attribute, html::DecodeLimits::standard()),
+        "decoder",
+    );
+    testing::assert_eq(testing::expect_ok(stream.push("&amp"), "pending"), "");
+    testing::assert_eq(testing::expect_ok(stream.push("=value&#x1f"), "lookahead"), "&amp=value");
+    testing::assert_eq(testing::expect_ok(stream.push("600;"), "emoji"), "😀");
+    testing::assert_eq(testing::expect_ok(stream.finish(), "finish"), "");
+}

@@ -1,0 +1,191 @@
+package tests;
+
+use ecosystem::html;
+use std::fs;
+use std::json;
+use std::testing;
+
+fn split_decode(input: string, expected: string, context: html::DecodeContext) -> () {
+    let limits = html::DecodeLimits {
+        max_input_bytes: input.byte_len(),
+        max_output_bytes: expected.byte_len(),
+    };
+    for split in 0..input.byte_len() + 1 {
+        if !input.is_char_boundary(split) {
+            continue
+        }
+        let stream = testing::expect_ok(html::Decoder::new(context, limits), "decoder");
+        let first = testing::expect_ok(stream.push(input.byte_slice(0, split)), "first");
+        let second = testing::expect_ok(
+            stream.push(input.byte_slice(split, input.byte_len())),
+            "second",
+        );
+        let last = testing::expect_ok(stream.finish(), "finish");
+        testing::assert_eq(first + second + last, expected);
+        testing::assert_eq(stream.input_bytes(), input.byte_len());
+        testing::assert_eq(stream.output_bytes(), expected.byte_len());
+        testing::assert_eq(stream.buffered_bytes(), 0);
+        testing::assert_eq(
+            testing::expect_err(stream.push(""), "finished"),
+            html::DecodeError::Finished,
+        );
+    }
+    let stream = testing::expect_ok(html::Decoder::new(context, limits), "decoder");
+    let parts = Vec::new();
+    for ch in input.chars() {
+        parts.push(testing::expect_ok(stream.push(ch.to_string()), "scalar chunk"));
+        testing::assert(stream.buffered_bytes() <= 32);
+    }
+    parts.push(testing::expect_ok(stream.finish(), "finish"));
+    testing::assert_eq(parts.join(""), expected);
+}
+
+#[test]
+fn streaming_matches_all_splits_of_recovery_and_attribute_references() -> () {
+    for context in[html::DecodeContext::Text, html::DecodeContext::Attribute] {
+        for input in[
+            "",
+            "界🙂",
+            "&",
+            "&#",
+            "&#x",
+            "&#x;",
+            "&#1",
+            "&#0&amp;",
+            "&notit;",
+            "&amp=",
+            "&ampx",
+            "&notin",
+            "&notin;",
+            "&NotEqualTilde;",
+            "&CounterClockwiseContourIntegral;",
+            "&CounterClockwiseContourIntegralx;",
+            "&&amp;&amp;lt;",
+            "&#xD800;&#128;&#1114112;",
+            "&#00000000000000000065;",
+            "&#999999999999999999999999!",
+            "&#x界&amp;",
+            "&apos",
+            "&unknown;end",
+        ] {
+            let expected = testing::expect_ok(
+                html::unescape_with(input, context, 1000),
+                "whole input",
+            );
+            split_decode(input, expected, context);
+        }
+    }
+    let data = testing::expect_ok(
+        json::parse(testing::expect_ok(fs::read_file_structured("data/entities.json"), "fixture")),
+        "JSON",
+    );
+    if let json::Value::Object(entries) = data {
+        for (name, value) in entries {
+            let expected = testing::expect_some(json::as_string(value), "entity");
+            split_decode("&" + name + ";", expected, html::DecodeContext::Text);
+            split_decode("&" + name + ";", expected, html::DecodeContext::Attribute);
+        }
+    } else {
+        testing::fail("entity object");
+    }
+}
+
+#[test]
+fn streaming_numeric_state_stays_bounded_and_errors_are_sticky() -> () {
+    let stream = testing::expect_ok(
+        html::Decoder::new(
+            html::DecodeContext::Text,
+            html::DecodeLimits { max_input_bytes: 100002, max_output_bytes: 3 },
+        ),
+        "decoder",
+    );
+    testing::assert_eq(testing::expect_ok(stream.push("&#"), "prefix"), "");
+    for _ in 0..100 {
+        testing::assert_eq(testing::expect_ok(stream.push("9".repeat(1000)), "digits"), "");
+        testing::assert(stream.buffered_bytes() <= 3);
+    }
+    testing::assert_eq(testing::expect_ok(stream.finish(), "saturated numeric"), "�");
+    let input = testing::expect_ok(
+        html::Decoder::new(
+            html::DecodeContext::Text,
+            html::DecodeLimits { max_input_bytes: 1, max_output_bytes: 100 },
+        ),
+        "decoder",
+    );
+    testing::assert_eq(
+        testing::expect_err(input.push("ab"), "input limit"),
+        html::DecodeError::InputLimit,
+    );
+    testing::assert_eq(
+        testing::expect_err(input.finish(), "sticky input"),
+        html::DecodeError::InputLimit,
+    );
+    testing::assert_eq(input.input_bytes(), 0);
+    let output = testing::expect_ok(
+        html::Decoder::new(
+            html::DecodeContext::Text,
+            html::DecodeLimits { max_input_bytes: 100, max_output_bytes: 2 },
+        ),
+        "decoder",
+    );
+    testing::assert_eq(testing::expect_ok(output.push("x&not"), "partial"), "x");
+    testing::assert_eq(
+        testing::expect_err(output.finish(), "output limit"),
+        html::DecodeError::OutputLimit,
+    );
+    testing::assert_eq(
+        testing::expect_err(output.push("ignored"), "sticky output"),
+        html::DecodeError::OutputLimit,
+    );
+    testing::assert_eq(output.output_bytes(), 1);
+    testing::assert_err(
+        html::Decoder::new(
+            html::DecodeContext::Text,
+            html::DecodeLimits { max_input_bytes: -1, max_output_bytes: 0 },
+        ),
+    );
+}
+
+#[test]
+fn streaming_failed_chunks_leave_shared_state_at_the_last_successful_call() -> () {
+    let stream = testing::expect_ok(
+        html::Decoder::new(
+            html::DecodeContext::Text,
+            html::DecodeLimits { max_input_bytes: 100, max_output_bytes: 2 },
+        ),
+        "decoder",
+    );
+    let alias = stream;
+    testing::assert_eq(testing::expect_ok(alias.push("&am"), "pending"), "");
+    testing::assert_eq(stream.buffered_bytes(), 3);
+    testing::assert_eq(
+        testing::expect_err(stream.push("p;ab"), "whole chunk exceeds output"),
+        html::DecodeError::OutputLimit,
+    );
+    testing::assert_eq(alias.input_bytes(), 3);
+    testing::assert_eq(alias.output_bytes(), 0);
+    testing::assert_eq(alias.buffered_bytes(), 3);
+    testing::assert_eq(
+        testing::expect_err(alias.finish(), "shared failure"),
+        html::DecodeError::OutputLimit,
+    );
+    let empty = testing::expect_ok(
+        html::Decoder::new(
+            html::DecodeContext::Attribute,
+            html::DecodeLimits { max_input_bytes: 0, max_output_bytes: 0 },
+        ),
+        "empty decoder",
+    );
+    testing::assert_eq(testing::expect_ok(empty.push(""), "empty push"), "");
+    testing::assert_eq(testing::expect_ok(empty.finish(), "empty finish"), "");
+    testing::assert_eq(
+        testing::expect_err(empty.finish(), "second finish"),
+        html::DecodeError::Finished,
+    );
+    testing::assert_err(
+        html::Decoder::new(
+            html::DecodeContext::Text,
+            html::DecodeLimits { max_input_bytes: 0, max_output_bytes: -1 },
+        ),
+    );
+}
