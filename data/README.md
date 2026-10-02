@@ -16,6 +16,6 @@ The HTML library tests also compare every public lookup with this independent da
 `legacy.json` contains the 106 semicolon-optional names transcribed from Go 1.26.8
 `src/html/entity.go`. SHA-256:
 `a6a154ef2aceab185d73f76c7afc646cc3cca813de4fc0755dfb91146fed3912`.
-The same native generator verifies this input and generates `legacy.gom`.
+The same native generator verifies this input and generates `legacy.goml`.
 Its BSD license is retained in [LICENSE.go.txt](../LICENSE.go.txt). The numeric C1
 replacement values were cross-checked against that toolchain's `html/escape.go`.
