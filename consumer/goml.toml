@@ -1,5 +1,0 @@
-[module]
-path = "consumer::html"
-
-[dependencies]
-"ecosystem::html" = "0.1.0"

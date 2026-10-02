@@ -1,6 +1,6 @@
 package tests;
 
-use consumer::html;
+use ecosystem::html::examples::basic as html;
 
 #[test]
 fn independent_consumer() -> () {
