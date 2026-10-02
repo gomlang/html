@@ -1,0 +1,45 @@
+package tests;
+
+use ecosystem::html;
+use std::testing;
+
+#[test]
+fn decoded_length_matches_reference_contexts_and_exact_limits() -> () {
+    for context in[html::DecodeContext::Text, html::DecodeContext::Attribute] {
+        for input in[
+            "",
+            "界🙂",
+            "plain & unknown;",
+            "&notin; &notit;",
+            "&amp=",
+            "&amp;lt;",
+            "&#128;&#0;",
+            "&#x; &#9999999999999999999999;",
+            "&NotEqualTilde;",
+            "x".repeat(8192) + "&amp;" + "界".repeat(1024),
+        ] {
+            let decoded = testing::expect_ok(html::unescape_with(input, context, 100000), "decode");
+            let length = testing::expect_ok(html::decoded_len(input, context), "decoded length");
+            testing::assert_eq(length, decoded.byte_len());
+            testing::assert_eq(
+                testing::expect_ok(html::unescape_with(input, context, length), "exact limit"),
+                decoded,
+            );
+            if length > 0 {
+                testing::assert_err(html::unescape_with(input, context, length - 1));
+            }
+        }
+    }
+    testing::assert_eq(
+        testing::expect_ok(html::decoded_len("&notit;", html::DecodeContext::Text), "text length"),
+        5,
+    );
+    testing::assert_eq(
+        testing::expect_ok(
+            html::decoded_len("&notit;", html::DecodeContext::Attribute),
+            "attribute length",
+        ),
+        7,
+    );
+    testing::assert_err(html::unescape("&amp;".repeat(100000), 8));
+}

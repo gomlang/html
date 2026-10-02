@@ -1,8 +1,20 @@
 package tests;
 
-use ecosystem::html::examples::basic as html;
+use ecosystem::html::examples::basic as example;
+use ecosystem::html;
+use std::testing;
 
 #[test]
 fn independent_consumer() -> () {
-    html::exercise()
+    example::exercise()
+}
+
+#[test]
+fn allocate_decoding_budget_from_public_length() -> () {
+    let input = "<p>&NotEqualTilde; &amp; &#x1f600;</p>";
+    let size = testing::expect_ok(
+        html::decoded_len(input, html::DecodeContext::Text),
+        "decoded size",
+    );
+    testing::assert_eq(testing::expect_ok(html::unescape(input, size), "decode"), "<p>≂̸ & 😀</p>");
 }
