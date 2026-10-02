@@ -42,8 +42,13 @@ check mistakes them for missing digits. Conversely, `&#x;` and `&#X;` contain no
 hexadecimal digits and remain literal here; Go incorrectly converts them to U+FFFD.
 Overflowing digit sequences also do not reproduce Go's 32-bit integer wraparound.
 
-Negative limits fail. Output growth is checked before each append and errors return
-no partial string. Limits bound logical output bytes, not input length or total
+`decoded_len(value, context)` computes the exact decoded UTF-8 byte length without
+allocating the decoded output, with checked arithmetic. Both decoders preflight
+the same reference rules and reject an oversized result before constructing its
+output. Literal runs are copied together; reference-free input is returned directly.
+This uses two scans for accepted reference-containing input.
+
+Negative limits fail and errors return no partial string. Limits bound logical output bytes, not input length or total
 process memory. Decoding does not sanitize markup, check URL schemes or validate
 which tokenizer state a caller is in. These are whole-string utilities, not
 streaming HTML tokenizers.

@@ -1,5 +1,7 @@
 package html;
 
+use std::text;
+
 pub enum DecodeContext {
     Text,
     Attribute,
@@ -121,6 +123,40 @@ fn reference(value: string, start: isize, attribute: bool) -> Option[(string, is
     found
 }
 
+fn attribute_context(context: DecodeContext) -> bool {
+    match context {
+        DecodeContext::Text => false,
+        DecodeContext::Attribute => true,
+    }
+}
+
+fn decoded_size(value: string, attribute: bool, max_bytes: isize) -> Result[isize, Error] {
+    let mut length = 0;
+    let mut index = 0;
+    while index < value.byte_len() {
+        let mut width = 1;
+        let mut end = index + 1;
+        if value.byte_get(index) == b'&' {
+            if let Some((decoded, next)) = reference(value, index, attribute) {
+                width = decoded.byte_len();
+                end = next;
+            }
+        }
+        if width > max_bytes - length {
+            return Result::Err(Error::LimitExceeded(max_bytes))
+        }
+        length += width;
+        index = end;
+    }
+    Result::Ok(length)
+}
+
+pub fn decoded_len(value: string, context: DecodeContext) -> Result[isize, Error] {
+    decoded_size(value, attribute_context(context), 9223372036854775807).map_err(
+        |_| Error::LengthOverflow,
+    )
+}
+
 pub fn unescape(value: string, max_bytes: isize) -> Result[string, Error] {
     unescape_with(value, DecodeContext::Text, max_bytes)
 }
@@ -132,30 +168,26 @@ pub fn unescape_with(value: string, context: DecodeContext, max_bytes: isize) ->
     if max_bytes < 0 {
         return Result::Err(Error::InvalidLimit(max_bytes))
     }
-    let attribute = match context {
-        DecodeContext::Text => false,
-        DecodeContext::Attribute => true,
-    };
-    let output: Vec[byte] = Vec::new();
+    let attribute = attribute_context(context);
+    let _ = decoded_size(value, attribute, max_bytes)?;
+    let output = text::StringBuilder::new();
     let mut index = 0;
+    let mut start = 0;
     while index < value.byte_len() {
         if value.byte_get(index) == b'&' {
             if let Some((decoded, end)) = reference(value, index, attribute) {
-                if decoded.byte_len() > max_bytes - output.len() {
-                    return Result::Err(Error::LimitExceeded(max_bytes))
-                }
-                for offset in 0..decoded.byte_len() {
-                    output.push(decoded.byte_get(offset));
-                }
+                output.write_string(value.byte_slice(start, index));
+                output.write_string(decoded);
                 index = end;
+                start = end;
                 continue
             }
         }
-        if output.len() == max_bytes {
-            return Result::Err(Error::LimitExceeded(max_bytes))
-        }
-        output.push(value.byte_get(index));
         index += 1;
     }
-    Result::Ok(string_from_utf8(output).1)
+    if start == 0 {
+        return Result::Ok(value)
+    }
+    output.write_string(value.byte_slice(start, value.byte_len()));
+    Result::Ok(output.finish())
 }
