@@ -50,8 +50,27 @@ This uses two scans for accepted reference-containing input.
 
 Negative limits fail and errors return no partial string. Limits bound logical output bytes, not input length or total
 process memory. Decoding does not sanitize markup, check URL schemes or validate
-which tokenizer state a caller is in. These are whole-string utilities, not
-streaming HTML tokenizers.
+which tokenizer state a caller is in. These utilities do not tokenize HTML.
+
+`Decoder::new(context, DecodeLimits)` provides incremental character-reference
+conversion. `push(chunk)` accepts complete UTF-8 strings and returns available
+output; references may cross any string boundary. It retains at most 32 pending
+name/prefix bytes and a saturated numeric accumulator, even for arbitrarily long
+digit runs. `finish()` applies the same EOF rules as whole-string decoding:
+semicolon-free legacy/numeric references decode, while `&`, `&#` and `&#x` remain
+literal. A successful finish closes the decoder; later push/finish calls return
+`DecodeError::Finished`.
+
+`DecodeLimits::standard()` allows 16 MiB cumulative input and 16 MiB cumulative
+output, independently configurable to nonnegative byte counts. A call first checks
+its complete input size, then checks every output append. A failed call returns no
+partial chunk, commits no counters/state, and permanently poisons the decoder;
+all subsequent calls return that first error. Previously returned chunks remain
+valid. `input_bytes`, `output_bytes` and `buffered_bytes` expose accepted input,
+returned output and retained prefix bytes. Copies share mutable state; serialize
+access and construct a new decoder for an independent stream. This is character
+reference streaming, not HTML tokenization; callers still select text/attribute
+context and provide valid UTF-8 chunks.
 
 Boundary expectations follow the HTML Standard's
 [numeric reference states](https://html.spec.whatwg.org/multipage/parsing.html#numeric-character-reference-state)

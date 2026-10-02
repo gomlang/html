@@ -1,0 +1,232 @@
+package html;
+
+use std::text;
+
+pub struct DecodeLimits {
+    pub max_input_bytes: isize,
+    pub max_output_bytes: isize,
+}
+
+impl DecodeLimits {
+    pub fn standard() -> DecodeLimits {
+        DecodeLimits { max_input_bytes: 16777216, max_output_bytes: 16777216 }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DecodeError {
+    InvalidLimits,
+    InputLimit,
+    OutputLimit,
+    Finished,
+}
+
+impl ToString for DecodeError {
+    fn to_string(self: DecodeError) -> string {
+        match self {
+            InvalidLimits => "invalid HTML decoder limits",
+            InputLimit => "HTML decoder input limit exceeded",
+            OutputLimit => "HTML decoder output limit exceeded",
+            Finished => "HTML decoder already finished",
+        }
+    }
+}
+
+struct DecodeState {
+    mode: isize,
+    pending: string,
+    number: isize,
+    radix: isize,
+    seen: bool,
+}
+
+impl DecodeState {
+    fn new() -> DecodeState {
+        DecodeState { mode: 0, pending: "", number: 0, radix: 10, seen: false }
+    }
+}
+
+pub struct Decoder {
+    attribute: bool,
+    limits: DecodeLimits,
+    state: Ref[DecodeState],
+    input: Ref[isize],
+    output: Ref[isize],
+    failure: Ref[Option[DecodeError]],
+    finished: Ref[bool],
+}
+
+impl Decoder {
+    pub fn new(context: DecodeContext, limits: DecodeLimits) -> Result[Decoder, DecodeError] {
+        if limits.max_input_bytes < 0 || limits.max_output_bytes < 0 {
+            return Result::Err(DecodeError::InvalidLimits)
+        }
+        Result::Ok(
+            Decoder {
+                attribute: attribute_context(context),
+                limits,
+                state: Ref::new(DecodeState::new()),
+                input: Ref::new(0),
+                output: Ref::new(0),
+                failure: Ref::new(Option::None),
+                finished: Ref::new(false),
+            },
+        )
+    }
+
+    pub fn input_bytes(self: Decoder) -> isize {
+        self.input.get()
+    }
+
+    pub fn output_bytes(self: Decoder) -> isize {
+        self.output.get()
+    }
+
+    pub fn buffered_bytes(self: Decoder) -> isize {
+        self.state.get().pending.byte_len()
+    }
+
+    fn emit(self: Decoder, output: text::StringBuilder, value: string) -> Result[(), DecodeError] {
+        if value.byte_len() > self.limits.max_output_bytes - self.output.get() - output.len() {
+            return Result::Err(DecodeError::OutputLimit)
+        }
+        output.write_string(value);
+        Result::Ok(())
+    }
+
+    fn named(self: Decoder, output: text::StringBuilder, pending: string, lookahead: string) -> Result[
+        (),
+        DecodeError,
+    ] {
+        match reference(pending + lookahead, 0, self.attribute) {
+            Some((value, end)) => {
+                self.emit(output, value)?;
+                if end < pending.byte_len() {
+                    self.emit(output, pending.byte_slice(end, pending.byte_len()))?;
+                }
+            },
+            None => self.emit(output, pending)?,
+        }
+        Result::Ok(())
+    }
+
+    fn feed(self: Decoder, chunk: string, ending: bool) -> Result[string, DecodeError] {
+        if chunk.byte_len() > self.limits.max_input_bytes - self.input.get() {
+            return Result::Err(DecodeError::InputLimit)
+        }
+        let output = text::StringBuilder::new();
+        let mut state = self.state.get();
+        for ch in chunk.chars() {
+            let scalar = ch.to_string();
+            let ascii = scalar.byte_len() == 1;
+            let byte = scalar.byte_get(0);
+            let mut consumed = false;
+            while !consumed {
+                if state.mode == 0 {
+                    if ch == '&' {
+                        state = DecodeState { mode: 1, pending: "&", ..DecodeState::new() };
+                    } else {
+                        self.emit(output, scalar)?;
+                    }
+                    consumed = true;
+                } else if state.mode == 1 {
+                    if state.pending == "&" && ch == '#' {
+                        state = DecodeState { mode: 2, pending: "&#", ..state };
+                        consumed = true;
+                    } else if ascii && name_byte(byte) && state.pending.byte_len() < 32 {
+                        state = DecodeState { pending: state.pending + scalar, ..state };
+                        consumed = true;
+                    } else if ch == ';' {
+                        self.named(output, state.pending + ";", "")?;
+                        state = DecodeState::new();
+                        consumed = true;
+                    } else {
+                        self.named(output, state.pending, scalar)?;
+                        state = DecodeState::new();
+                    }
+                } else if state.mode == 2 {
+                    if ch == 'x' || ch == 'X' {
+                        state = DecodeState {
+                            mode: 3,
+                            radix: 16,
+                            pending: state.pending + scalar,
+                            ..state,
+                        };
+                        consumed = true;
+                    } else if ascii && digit(byte, 10).is_some() {
+                        state = DecodeState { mode: 3, ..state };
+                    } else {
+                        self.emit(output, state.pending)?;
+                        state = DecodeState::new();
+                    }
+                } else {
+                    let part = if ascii {
+                        digit(byte, state.radix)
+                    } else {
+                        Option::None
+                    };
+                    if let Some(part) = part {
+                        let number = if state.number <= 1114111 {
+                            state.number * state.radix + part
+                        } else {
+                            state.number
+                        };
+                        state = DecodeState { number, seen: true, ..state };
+                        consumed = true;
+                    } else {
+                        if state.seen {
+                            self.emit(output, numeric_scalar(state.number))?;
+                            consumed = ch == ';';
+                        } else {
+                            self.emit(output, state.pending)?;
+                        }
+                        state = DecodeState::new();
+                    }
+                }
+            }
+        }
+        if ending {
+            if state.mode == 1 {
+                self.named(output, state.pending, "")?;
+            } else if state.mode == 3 && state.seen {
+                self.emit(output, numeric_scalar(state.number))?;
+            } else if state.mode != 0 {
+                self.emit(output, state.pending)?;
+            }
+            state = DecodeState::new();
+        }
+        self.state.set(state);
+        self.input.set(self.input.get() + chunk.byte_len());
+        self.output.set(self.output.get() + output.len());
+        Result::Ok(output.finish())
+    }
+
+    fn advance(self: Decoder, chunk: string, ending: bool) -> Result[string, DecodeError] {
+        if let Some(error) = self.failure.get() {
+            return Result::Err(error)
+        }
+        if self.finished.get() {
+            return Result::Err(DecodeError::Finished)
+        }
+        match self.feed(chunk, ending) {
+            Ok(output) => {
+                if ending {
+                    self.finished.set(true);
+                }
+                Result::Ok(output)
+            },
+            Err(error) => {
+                self.failure.set(Option::Some(error));
+                Result::Err(error)
+            },
+        }
+    }
+
+    pub fn push(self: Decoder, chunk: string) -> Result[string, DecodeError] {
+        self.advance(chunk, false)
+    }
+
+    pub fn finish(self: Decoder) -> Result[string, DecodeError] {
+        self.advance("", true)
+    }
+}
