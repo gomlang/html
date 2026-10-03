@@ -201,3 +201,64 @@ fn sanitizer_removes_active_markup_and_obfuscated_urls() -> () {
         clean,
     );
 }
+
+#[test]
+fn inner_html_and_fragments_preserve_raw_text_context() -> () {
+    let limits = dom::Limits::standard();
+    for (input, selector, expected) in[
+        ("<script>if (a < b && c) {}</script>", "script", "if (a < b && c) {}"),
+        ("<style>a>b { content: '&' }</style>", "style", "a>b { content: '&' }"),
+        ("<svg><script>a &lt; b &amp;</script></svg>", "script", "a &lt; b &amp;"),
+        (
+            "<svg><foreignObject><script>a < b && c</script></foreignObject></svg>",
+            "script",
+            "a < b && c",
+        ),
+    ] {
+        let document = testing::expect_ok(
+            dom::parse_fragment(
+                input,
+                "div",
+                dom::Limits { max_output_bytes: expected.byte_len(), ..limits },
+            ),
+            "raw-text document",
+        );
+        let node = testing::expect_some(
+            testing::expect_ok(document.select_first(selector), "raw-text selection"),
+            "raw-text element",
+        );
+        testing::assert_eq(
+            testing::expect_ok(node.inner_html(), "contextual serialization"),
+            expected,
+        );
+    }
+    let input = "if (a < b && c) {}";
+    let fragment = testing::expect_ok(
+        dom::parse_fragment(input, "script", limits),
+        "script fragment",
+    );
+    testing::assert_eq(testing::expect_ok(fragment.to_html(), "retained context"), input);
+}
+
+#[test]
+fn adversarial_selectors_fail_before_unbounded_matching() -> () {
+    let document = testing::expect_ok(
+        dom::parse_fragment(
+            "<div>".repeat(40) + "leaf" + "</div>".repeat(40),
+            "div",
+            dom::Limits::standard(),
+        ),
+        "nested tree",
+    );
+    let query = "absent" + " div".repeat(20);
+    for selector in[query, ":not(:not(" + query + "))", ":has(" + query + ")"] {
+        match document.select(selector) {
+            Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::SelectorWorkLimit),
+            _ => testing::fail("exponential selector admitted"),
+        }
+        match document.select_first(selector) {
+            Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::SelectorWorkLimit),
+            _ => testing::fail("first-match query bypassed admission"),
+        }
+    }
+}
