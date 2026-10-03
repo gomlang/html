@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -12,7 +13,14 @@ import (
 )
 
 type Node struct {
-	n *html.Node
+	n     *html.Node
+	stats *treeStats
+}
+
+type treeStats struct {
+	nodes    int
+	depth    int
+	children int
 }
 
 type Attribute struct {
@@ -57,16 +65,23 @@ func checkInput(input string, maxInput, maxNodes, maxDepth int) error {
 	return nil
 }
 
-func checkTree(root *html.Node, maxNodes, maxDepth int) error {
+func checkTree(root *html.Node, maxNodes, maxDepth int) (*treeStats, error) {
+	stats := &treeStats{}
 	count, depth := 0, 0
 	for n := root; n != nil; {
 		count++
 		if count > maxNodes {
-			return failure{3, "HTML node limit exceeded"}
+			return nil, failure{3, "HTML node limit exceeded"}
 		}
 		if depth > maxDepth {
-			return failure{4, "HTML tree depth limit exceeded"}
+			return nil, failure{4, "HTML tree depth limit exceeded"}
 		}
+		stats.depth = max(stats.depth, depth)
+		children := 0
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			children++
+		}
+		stats.children = max(stats.children, children)
 		if n.FirstChild != nil {
 			n = n.FirstChild
 			depth++
@@ -81,7 +96,8 @@ func checkTree(root *html.Node, maxNodes, maxDepth int) error {
 		}
 		n = n.NextSibling
 	}
-	return nil
+	stats.nodes = count
+	return stats, nil
 }
 
 func Parse(input string, maxInput, maxNodes, maxDepth int) (Node, error) {
@@ -92,10 +108,11 @@ func Parse(input string, maxInput, maxNodes, maxDepth int) (Node, error) {
 	if err != nil {
 		return Node{}, failure{7, err.Error()}
 	}
-	if err := checkTree(n, maxNodes, maxDepth); err != nil {
+	stats, err := checkTree(n, maxNodes, maxDepth)
+	if err != nil {
 		return Node{}, err
 	}
-	return Node{n}, nil
+	return Node{n: n, stats: stats}, nil
 }
 
 func ParseFragment(input, context string, maxInput, maxNodes, maxDepth int) (Node, error) {
@@ -112,14 +129,15 @@ func ParseFragment(input, context string, maxInput, maxNodes, maxDepth int) (Nod
 	if err != nil {
 		return Node{}, failure{7, err.Error()}
 	}
-	root := &html.Node{Type: html.DocumentNode}
+	root := &html.Node{Type: html.DocumentNode, Data: context}
 	for _, n := range nodes {
 		root.AppendChild(n)
 	}
-	if err := checkTree(root, maxNodes, maxDepth); err != nil {
+	stats, err := checkTree(root, maxNodes, maxDepth)
+	if err != nil {
 		return Node{}, err
 	}
-	return Node{root}, nil
+	return Node{n: root, stats: stats}, nil
 }
 
 func validContext(context string) bool {
@@ -158,21 +176,21 @@ func Parent(node Node) Node {
 	if node.n == nil {
 		return Node{}
 	}
-	return Node{node.n.Parent}
+	return Node{n: node.n.Parent, stats: node.stats}
 }
 
 func FirstChild(node Node) Node {
 	if node.n == nil {
 		return Node{}
 	}
-	return Node{node.n.FirstChild}
+	return Node{n: node.n.FirstChild, stats: node.stats}
 }
 
 func NextSibling(node Node) Node {
 	if node.n == nil {
 		return Node{}
 	}
-	return Node{node.n.NextSibling}
+	return Node{n: node.n.NextSibling, stats: node.stats}
 }
 
 func SameNode(left, right Node) bool { return left.n == right.n }
@@ -230,6 +248,43 @@ func Render(node Node, inner bool, maxOutput int) (string, error) {
 	if node.n == nil {
 		return "", nil
 	}
+	if (inner || node.n.Type == html.DocumentNode) && rawTextElement(node.n.Data) {
+		copy := *node.n
+		copy.Type = html.ElementNode
+		copy.Attr = nil
+		opening := "<" + copy.Data + ">"
+		closing := "</" + copy.Data + ">"
+		empty := copy
+		empty.FirstChild = nil
+		empty.LastChild = nil
+		var wrapper strings.Builder
+		if err := html.Render(&wrapper, &empty); err != nil {
+			return "", err
+		}
+		if wrapper.String() == opening {
+			closing = ""
+		} else if wrapper.String() != opening+closing {
+			return "", failure{7, "HTML backend returned an unexpected raw-text wrapper"}
+		}
+		overhead := len(opening) + len(closing)
+		limit := math.MaxInt
+		if maxOutput <= math.MaxInt-overhead {
+			limit = maxOutput + overhead
+		}
+		parent := &limitedWriter{limit: limit}
+		if err := html.Render(parent, &copy); err != nil {
+			return "", err
+		}
+		serialized := parent.output.String()
+		if !strings.HasPrefix(serialized, opening) || !strings.HasSuffix(serialized, closing) {
+			return "", failure{7, "HTML backend returned an unexpected raw-text wrapper"}
+		}
+		content := serialized[len(opening) : len(serialized)-len(closing)]
+		if len(content) > maxOutput {
+			return "", failure{5, "HTML output byte limit exceeded"}
+		}
+		return content, nil
+	}
 	if inner {
 		for c := node.n.FirstChild; c != nil; c = c.NextSibling {
 			if err := html.Render(w, c); err != nil {
@@ -240,6 +295,15 @@ func Render(node Node, inner bool, maxOutput int) (string, error) {
 		return "", err
 	}
 	return w.output.String(), nil
+}
+
+func rawTextElement(name string) bool {
+	switch name {
+	case "iframe", "noembed", "noframes", "noscript", "plaintext", "script", "style", "xmp":
+		return true
+	default:
+		return false
+	}
 }
 
 func Text(node Node, maxOutput int) (string, error) {
@@ -271,41 +335,15 @@ func Text(node Node, maxOutput int) (string, error) {
 	return w.output.String(), nil
 }
 
-func selector(query string, maxBytes int) (cascadia.SelectorGroup, error) {
+func selector(query string, maxBytes int, stats *treeStats, single bool) (cascadia.SelectorGroup, error) {
 	if maxBytes < 0 {
 		return nil, failure{1, "negative selector byte limit"}
 	}
 	if len(query) > maxBytes || len(query) > 4096 {
 		return nil, failure{6, "CSS selector exceeds byte limit (hard maximum 4096)"}
 	}
-	depth := 0
-	var quote rune
-	escaped := false
-	for _, r := range query {
-		if escaped {
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-			}
-			continue
-		}
-		if r == '\'' || r == '"' {
-			quote = r
-		} else if r == '(' || r == '[' {
-			depth++
-			if depth > 32 {
-				return nil, failure{6, "CSS selector nesting exceeds 32"}
-			}
-		} else if r == ')' || r == ']' {
-			depth--
-		}
+	if err := selectorAdmission(query, stats, single); err != nil {
+		return nil, err
 	}
 	s, err := cascadia.ParseGroup(query)
 	if err != nil {
@@ -315,7 +353,7 @@ func selector(query string, maxBytes int) (cascadia.SelectorGroup, error) {
 }
 
 func Matches(node Node, query string, maxBytes int) (bool, error) {
-	s, err := selector(query, maxBytes)
+	s, err := selector(query, maxBytes, node.stats, true)
 	if err != nil {
 		return false, err
 	}
@@ -326,7 +364,7 @@ func Select(node Node, query string, maxBytes, maxMatches int, first bool) ([]No
 	if maxMatches < 0 {
 		return nil, failure{1, "negative selector match limit"}
 	}
-	s, err := selector(query, maxBytes)
+	s, err := selector(query, maxBytes, node.stats, false)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +377,7 @@ func Select(node Node, query string, maxBytes, maxMatches int, first bool) ([]No
 			if len(result) == maxMatches {
 				return nil, failure{9, "CSS selector match limit exceeded"}
 			}
-			result = append(result, Node{n})
+			result = append(result, Node{n: n, stats: node.stats})
 			if first {
 				break
 			}

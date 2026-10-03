@@ -15,6 +15,7 @@ pub enum ErrorKind {
     FragmentContext,
     MatchLimit,
     UnstableSanitization,
+    SelectorWorkLimit,
 }
 
 #[derive(Debug)]
@@ -111,6 +112,7 @@ fn check(error: ffi::Error) -> Result[(), Error] {
         8 => ErrorKind::FragmentContext,
         9 => ErrorKind::MatchLimit,
         10 => ErrorKind::UnstableSanitization,
+        11 => ErrorKind::SelectorWorkLimit,
         _ => ErrorKind::Parse,
     };
     Err(Error { kind, message: text(bindings::error_message(error)) })

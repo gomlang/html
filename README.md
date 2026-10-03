@@ -116,7 +116,8 @@ part of parsing; malformed HTML ordinarily produces a recovered tree rather than
 a validation error. This does not execute scripts or load referenced resources.
 
 `parse_fragment(input, context, limits)` returns a synthetic document whose
-children are the fragment nodes. The context is a recognized lowercase HTML
+children are the fragment nodes. Serialization retains the original context, so
+a `script` fragment preserves literal `<` and `&` in its text. The context is a recognized lowercase HTML
 element, for example `div`, `table`, `select` or `textarea`; these contexts have
 different parsing rules. Foreign namespace and custom-element contexts are not
 accepted. Parsed documents may contain SVG/MathML nodes, and `namespace()` plus
@@ -131,17 +132,27 @@ case-sensitive and returns the first matching attribute. `value()` reads text or
 comment data; `text()` concatenates descendant text without layout whitespace or
 visibility processing. It includes script/style text when present in an
 unsanitized tree. `inner_html` and `outer_html` produce HTML serialization rather
-than preserving original formatting. These methods do not sanitize their output.
+than preserving original formatting. Inner serialization preserves the parent's
+raw-text and namespace rules: HTML script/style text stays literal, while SVG
+script/style text remains escaped. These methods do not sanitize their output.
 
 `select` returns matching descendants in document order, excluding the node on
 which it is called; selector groups deduplicate matches. `select_first` stops at
-the first match. `matches` tests the node itself. Supported selectors come from
+the first match. `matches` tests the node itself. The supported bounded selector
+subset uses
 [Cascadia](https://github.com/andybalholm/cascadia), including element/ID/class,
-attribute operators, combinators, groups, `:not` and `:nth-child`. Invalid syntax
-returns `ErrorKind::Selector`. This is static tree matching, without browser
+attribute operators, combinators, groups, `:not`, `:has`, `:haschild`, nth/first/
+last/only child/type pseudo-classes, `:empty`, `:root`, `:lang`, `:link`, `:input`,
+`:checked`, `:enabled` and `:disabled`. Escapes are supported inside quoted
+attribute values only. Regex attribute matching and Cascadia's text/regex pseudo-
+classes are excluded. Invalid or unsupported syntax returns `ErrorKind::Selector`.
+This is static tree matching, without browser
 layout, interactive pseudo-class state or a promise of complete Selectors Level 4
 support. A selector can inspect ancestors outside the selected subtree, as with
-ordinary descendant queries.
+ordinary descendant queries. Cascadia compares attribute local names without
+namespace filtering: `[href]` can match SVG `xlink:href`, while `attribute("href")`
+and `attribute_ns("xlink", "href")` remain distinct. Use the namespace-aware
+accessors for decisions that depend on attribute namespaces.
 
 `Limits::standard()` supplies:
 
@@ -155,7 +166,19 @@ ordinary descendant queries.
 | `max_matches` | 10,000 | Before appending each result; exceeding it returns no partial vector |
 
 Nodes must be at least one; other limits must be nonnegative. Selector nesting
-has an additional hard ceiling of 32. The HTML backend independently rejects an
+has an additional hard ceiling of 32. Before invoking the matcher, an admission
+check estimates structural work using the immutable document's actual node count,
+maximum depth and maximum child count. It starts with selector length times
+document nodes (one starting node for `matches`), multiplies by ancestor/sibling
+scan bounds for combinators and by traversal bounds for recursive/structural
+pseudo-classes, including those nested in `:not` and `:has`. An estimate above
+10,000,000 returns `SelectorWorkLimit` without matching or partial results. The
+same guard applies to `select_first`. The estimate deliberately combines maxima
+across the complete document and may reject a query whose actual evaluation would
+be cheaper. This bounds admitted structural matching work; it is not a wall-clock
+or instruction-count guarantee.
+
+The HTML backend independently rejects an
 open-element stack deeper than 512. Input limits bound admitted source bytes;
 node/depth limits validate the resulting tree and do not cap parser allocations
 or process memory before construction. There is no CPU-time deadline. Node
