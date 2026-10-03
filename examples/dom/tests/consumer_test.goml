@@ -1,0 +1,42 @@
+package tests;
+
+use ecosystem::html;
+use ecosystem::html::dom;
+use ecosystem::html::examples::dom as example;
+use std::testing;
+
+#[test]
+fn document_extraction_and_entity_helpers_work_together() -> () {
+    let links = testing::expect_ok(
+        example::title_links(
+            "<article><h2><a href='/a?x=1&amp;y=2'>A &amp; B</a></h2><a href='/ignored'>ignored</a></article>",
+        ),
+        "consumer extraction",
+    );
+    testing::assert_eq(links.len(), 1);
+    testing::assert_eq(links.get(0), "A & B: /a?x=1&y=2");
+    testing::assert_eq(testing::expect_ok(html::escape("<p>", 20), "entity API"), "&lt;p&gt;");
+}
+
+#[test]
+fn sanitized_fragment_can_be_reparsed_and_selected() -> () {
+    let limits = dom::Limits::standard();
+    let safe = testing::expect_ok(
+        dom::sanitize(
+            "<p onclick='x'>Hello <em>world</em></p><script>alert(1)</script>",
+            dom::SanitizePolicy::RichText,
+            limits,
+        ),
+        "sanitize consumer input",
+    );
+    let document = testing::expect_ok(dom::parse_fragment(safe, "div", limits), "consumer fragment");
+    testing::assert_eq(
+        testing::expect_ok(document.select("script,[onclick]"), "active content").len(),
+        0,
+    );
+    let emphasis = testing::expect_some(
+        testing::expect_ok(document.select_first("p > em"), "retained formatting"),
+        "emphasis",
+    );
+    testing::assert_eq(testing::expect_ok(emphasis.text(), "consumer text"), "world");
+}

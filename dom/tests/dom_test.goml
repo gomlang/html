@@ -1,0 +1,203 @@
+package tests;
+
+use ecosystem::html::dom;
+use std::testing;
+
+#[test]
+fn html5_tree_recovery_fragments_and_namespaces() -> () {
+    let limits = dom::Limits::standard();
+    let document = testing::expect_ok(
+        dom::parse("<!doctype html><title>Title</title><p>one<div>two</div>", limits),
+        "HTML5 document",
+    );
+    testing::assert_eq(document.root().kind(), dom::NodeKind::Document);
+    testing::assert(document.root().parent().is_none());
+    testing::assert_eq(
+        testing::expect_ok(document.to_html(), "document rendering"),
+        "<!DOCTYPE html><html><head><title>Title</title></head><body><p>one</p><div>two</div></body></html>",
+    );
+    for (input, context, expected) in[
+        ("<b><i>one</b>two</i>", "div", "<b><i>one</i></b><i>two</i>"),
+        ("<tr><td>A<td>B", "table", "<tbody><tr><td>A</td><td>B</td></tr></tbody>"),
+        ("<option>A<option>B", "select", "<option>A</option><option>B</option>"),
+        ("&lt;b&gt;X&lt;/b&gt;", "textarea", "&lt;b&gt;X&lt;/b&gt;"),
+    ] {
+        let fragment = testing::expect_ok(dom::parse_fragment(input, context, limits), "fragment");
+        testing::assert_eq(testing::expect_ok(fragment.to_html(), "fragment rendering"), expected);
+    }
+    let foreign = testing::expect_ok(
+        dom::parse_fragment("<svg viewBox='0 0 1 1'><a xlink:href='#x'/></svg>", "div", limits),
+        "foreign content",
+    );
+    let svg = testing::expect_some(
+        testing::expect_ok(foreign.select_first("svg"), "SVG selection"),
+        "SVG",
+    );
+    testing::assert_eq(svg.namespace(), "svg");
+    testing::assert_eq(testing::expect_some(svg.attribute("viewBox"), "viewBox"), "0 0 1 1");
+    let anchor = testing::expect_some(svg.first_child(), "SVG anchor");
+    testing::assert_eq(testing::expect_some(anchor.attribute_ns("xlink", "href"), "xlink"), "#x");
+    testing::assert_eq(anchor.attributes().get(0).namespace, "xlink");
+}
+
+#[test]
+fn selectors_navigation_attributes_and_text() -> () {
+    let document = testing::expect_ok(
+        dom::parse_fragment(
+            "<ul id='menu'><li class='item' data-id='a'>A &amp; B</li><li>C<b>!</b></li><li class='item'>D</li></ul>",
+            "div",
+            dom::Limits::standard(),
+        ),
+        "menu fragment",
+    );
+    let items = testing::expect_ok(document.select("#menu > li.item"), "class selector");
+    testing::assert_eq(items.len(), 2);
+    testing::assert_eq(items.get(0).name(), "li");
+    testing::assert_eq(testing::expect_some(items.get(0).attribute("data-id"), "data-id"), "a");
+    testing::assert(items.get(0).attribute("missing").is_none());
+    testing::assert_eq(testing::expect_ok(items.get(0).text(), "text extraction"), "A & B");
+    testing::assert_eq(testing::expect_ok(items.get(0).inner_html(), "inner HTML"), "A &amp; B");
+    let middle = testing::expect_some(
+        testing::expect_ok(document.select_first("li:nth-child(2):not(.item)"), "pseudo classes"),
+        "middle item",
+    );
+    testing::assert(testing::expect_ok(middle.matches("li + li"), "matches node itself"));
+    testing::assert_eq(testing::expect_ok(middle.select("li"), "descendants only").len(), 0);
+    testing::assert_eq(testing::expect_ok(middle.text(), "nested text"), "C!");
+    testing::assert(testing::expect_some(items.get(0).next_sibling(), "sibling").same_node(middle));
+    let list = testing::expect_some(middle.parent(), "parent");
+    testing::assert_eq(list.name(), "ul");
+    testing::assert_eq(list.children().len(), 3);
+    testing::assert_eq(
+        testing::expect_ok(document.select("li, .item"), "group deduplication").len(),
+        3,
+    );
+    testing::assert(
+        testing::expect_ok(document.select_first("[data-missing]"), "missing selection").is_none(),
+    );
+}
+
+#[test]
+fn parse_selector_and_output_errors_are_recoverable() -> () {
+    let limits = dom::Limits::standard();
+    match dom::parse("abc", dom::Limits { max_input_bytes: 2, ..limits }) {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::InputLimit),
+        _ => testing::fail("input bytes must be bounded"),
+    }
+    match dom::parse("", dom::Limits { max_nodes: 3, ..limits }) {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::NodeLimit),
+        _ => testing::fail("implicit document/html/head/body nodes must be counted"),
+    }
+    match dom::parse("", dom::Limits { max_depth: 1, ..limits }) {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::DepthLimit),
+        _ => testing::fail("implicit node depths must be counted"),
+    }
+    for invalid in[
+        dom::Limits { max_output_bytes: -1, ..limits },
+        dom::Limits { max_depth: 513, ..limits },
+        dom::Limits { max_matches: -1, ..limits },
+        dom::Limits { max_nodes: 0, ..limits },
+    ] {
+        match dom::parse("", invalid) {
+            Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::InvalidLimits),
+            _ => testing::fail("invalid limits accepted"),
+        }
+    }
+    for context in["", "DIV", "svg", "math", "not-an-html-element"] {
+        match dom::parse_fragment("", context, limits) {
+            Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::FragmentContext),
+            _ => testing::fail("unsupported fragment context accepted"),
+        }
+    }
+    let document = testing::expect_ok(
+        dom::parse_fragment("<p>A</p><p>B</p>", "div", dom::Limits { max_matches: 1, ..limits }),
+        "limited selection",
+    );
+    match document.select("p") {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::MatchLimit),
+        _ => testing::fail("match limit silently truncated results"),
+    }
+    testing::assert(testing::expect_ok(document.select_first("p"), "first stops early").is_some());
+    for selector in["[", "p::unsupported", "x".repeat(4097)] {
+        match document.select(selector) {
+            Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::Selector),
+            _ => testing::fail("invalid selector accepted"),
+        }
+    }
+    let document = testing::expect_ok(
+        dom::parse_fragment("<p>界</p>", "div", dom::Limits { max_output_bytes: 2, ..limits }),
+        "small output limit",
+    );
+    match document.root().text() {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::OutputLimit),
+        _ => testing::fail("text byte limit"),
+    }
+    match document.to_html() {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::OutputLimit),
+        _ => testing::fail("serialization byte limit"),
+    }
+}
+
+#[test]
+fn sanitizer_removes_active_markup_and_obfuscated_urls() -> () {
+    let limits = dom::Limits::standard();
+    for input in[
+        "<p onclick='alert(1)'>ok</p><script>alert(1)</script>",
+        "<svg onload='alert(1)'></svg><p>ok</p>",
+        "<p>ok</p><iframe srcdoc='<script>alert(1)</script>'></iframe>",
+    ] {
+        testing::assert_eq(
+            testing::expect_ok(
+                dom::sanitize(input, dom::SanitizePolicy::RichText, limits),
+                "sanitize",
+            ),
+            "<p>ok</p>",
+        );
+    }
+    for scheme in[
+        "javascript:alert(1)",
+        "jav&#x61;script:alert(1)",
+        "java\tscript:alert(1)",
+        "java\nscript:alert(1)",
+        "&#14;javascript:alert(1)",
+        "data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;",
+    ] {
+        let clean = testing::expect_ok(
+            dom::sanitize(
+                "<a href='" + scheme + "'>link</a>",
+                dom::SanitizePolicy::RichText,
+                limits,
+            ),
+            "unsafe URL",
+        );
+        let document = testing::expect_ok(dom::parse_fragment(clean, "div", limits), "reparse");
+        testing::assert_eq(testing::expect_ok(document.select("[href]"), "href selection").len(), 0);
+        testing::assert_eq(testing::expect_ok(document.root().text(), "retained text"), "link");
+    }
+    testing::assert_eq(
+        testing::expect_ok(
+            dom::sanitize(
+                "<p>Hello &amp; <strong>world</strong></p><style>secret</style>",
+                dom::SanitizePolicy::TextOnly,
+                limits,
+            ),
+            "text-only policy returns escaped HTML",
+        ),
+        "Hello &amp; world",
+    );
+    let clean = testing::expect_ok(
+        dom::sanitize(
+            "<table><tr><td>A</td></tr></table><a href='/docs'>Docs</a>",
+            dom::SanitizePolicy::RichText,
+            limits,
+        ),
+        "formatting and links",
+    );
+    testing::assert_eq(
+        testing::expect_ok(
+            dom::sanitize(clean, dom::SanitizePolicy::RichText, limits),
+            "idempotence",
+        ),
+        clean,
+    );
+}
