@@ -1,0 +1,334 @@
+package dom;
+
+use ecosystem::html::dom::bindings;
+use std::ffi;
+
+#[derive(Debug, PartialEq)]
+pub enum ErrorKind {
+    InvalidLimits,
+    InputLimit,
+    NodeLimit,
+    DepthLimit,
+    OutputLimit,
+    Selector,
+    Parse,
+    FragmentContext,
+    MatchLimit,
+    UnstableSanitization,
+}
+
+#[derive(Debug)]
+pub struct Error {
+    pub kind: ErrorKind,
+    pub message: string,
+}
+
+impl ToString for Error {
+    fn to_string(self: Error) -> string {
+        self.message
+    }
+}
+
+#[derive(Debug)]
+pub struct Limits {
+    pub max_input_bytes: isize,
+    pub max_nodes: isize,
+    pub max_depth: isize,
+    pub max_output_bytes: isize,
+    pub max_selector_bytes: isize,
+    pub max_matches: isize,
+}
+
+impl Limits {
+    pub fn standard() -> Limits {
+        Limits {
+            max_input_bytes: 1024 * 1024,
+            max_nodes: 100000,
+            max_depth: 256,
+            max_output_bytes: 4 * 1024 * 1024,
+            max_selector_bytes: 4096,
+            max_matches: 10000,
+        }
+    }
+
+    fn validate(self: Limits) -> Result[(), Error] {
+        if self.max_input_bytes < 0 || self.max_nodes < 1 || self.max_depth < 0
+            || self.max_depth > 512
+            || self.max_output_bytes < 0
+            || self.max_selector_bytes < 0
+            || self.max_matches < 0 {
+            return Err(
+                Error {
+                    kind: ErrorKind::InvalidLimits,
+                    message: "HTML limits require nonnegative values, nodes >= 1 and depth <= 512",
+                },
+            )
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum NodeKind {
+    Document,
+    Element,
+    Text,
+    Comment,
+    Doctype,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Attribute {
+    pub namespace: string,
+    pub name: string,
+    pub value: string,
+}
+
+pub struct Node {
+    raw: bindings::Node,
+    limits: Limits,
+}
+
+pub struct Document {
+    root: Node,
+}
+
+fn text(value: ffi::String) -> string {
+    ffi::string_text(value).unwrap_or("")
+}
+
+fn check(error: ffi::Error) -> Result[(), Error] {
+    if ffi::error_is_nil(error) {
+        return Ok(())
+    }
+    let kind = match bindings::error_code(error) {
+        1 => ErrorKind::InvalidLimits,
+        2 => ErrorKind::InputLimit,
+        3 => ErrorKind::NodeLimit,
+        4 => ErrorKind::DepthLimit,
+        5 => ErrorKind::OutputLimit,
+        6 => ErrorKind::Selector,
+        8 => ErrorKind::FragmentContext,
+        9 => ErrorKind::MatchLimit,
+        10 => ErrorKind::UnstableSanitization,
+        _ => ErrorKind::Parse,
+    };
+    Err(Error { kind, message: text(bindings::error_message(error)) })
+}
+
+fn optional_node(raw: bindings::Node, limits: Limits) -> Option[Node] {
+    if bindings::is_nil(raw) {
+        None
+    } else {
+        Some(Node { raw, limits })
+    }
+}
+
+pub fn parse(input: string, limits: Limits) -> Result[Document, Error] {
+    limits.validate()?;
+    let (raw, error) = bindings::parse(
+        ffi::string_from_text(input),
+        limits.max_input_bytes,
+        limits.max_nodes,
+        limits.max_depth,
+    );
+    check(error)?;
+    Ok(Document { root: Node { raw, limits } })
+}
+
+pub fn parse_fragment(input: string, context: string, limits: Limits) -> Result[Document, Error] {
+    limits.validate()?;
+    let (raw, error) = bindings::parse_fragment(
+        ffi::string_from_text(input),
+        ffi::string_from_text(context),
+        limits.max_input_bytes,
+        limits.max_nodes,
+        limits.max_depth,
+    );
+    check(error)?;
+    Ok(Document { root: Node { raw, limits } })
+}
+
+impl Document {
+    pub fn root(self: Document) -> Node {
+        self.root
+    }
+
+    pub fn select(self: Document, selector: string) -> Result[Vec[Node], Error] {
+        self.root.select(selector)
+    }
+
+    pub fn select_first(self: Document, selector: string) -> Result[Option[Node], Error] {
+        self.root.select_first(selector)
+    }
+
+    pub fn to_html(self: Document) -> Result[string, Error] {
+        self.root.outer_html()
+    }
+}
+
+impl Node {
+    pub fn kind(self: Node) -> NodeKind {
+        match bindings::kind(self.raw) {
+            1 => NodeKind::Text,
+            3 => NodeKind::Element,
+            4 => NodeKind::Comment,
+            5 => NodeKind::Doctype,
+            _ => NodeKind::Document,
+        }
+    }
+
+    pub fn name(self: Node) -> string {
+        if self.kind() == NodeKind::Element || self.kind() == NodeKind::Doctype {
+            text(bindings::data(self.raw))
+        } else {
+            ""
+        }
+    }
+
+    pub fn namespace(self: Node) -> string {
+        text(bindings::namespace(self.raw))
+    }
+
+    pub fn value(self: Node) -> string {
+        if self.kind() == NodeKind::Text || self.kind() == NodeKind::Comment {
+            text(bindings::data(self.raw))
+        } else {
+            ""
+        }
+    }
+
+    pub fn same_node(self: Node, other: Node) -> bool {
+        bindings::same_node(self.raw, other.raw)
+    }
+
+    pub fn parent(self: Node) -> Option[Node] {
+        optional_node(bindings::parent(self.raw), self.limits)
+    }
+
+    pub fn first_child(self: Node) -> Option[Node] {
+        optional_node(bindings::first_child(self.raw), self.limits)
+    }
+
+    pub fn next_sibling(self: Node) -> Option[Node] {
+        optional_node(bindings::next_sibling(self.raw), self.limits)
+    }
+
+    pub fn children(self: Node) -> Vec[Node] {
+        let result = Vec::new();
+        let mut current = self.first_child();
+        while let Some(child) = current {
+            result.push(child);
+            current = child.next_sibling();
+        }
+        result
+    }
+
+    pub fn attributes(self: Node) -> Vec[Attribute] {
+        let result = Vec::new();
+        for attribute in ffi::slice_to_vec_copy(bindings::attributes(self.raw)) {
+            result.push(
+                Attribute {
+                    namespace: text(bindings::attribute_namespace(attribute)),
+                    name: text(bindings::attribute_name(attribute)),
+                    value: text(bindings::attribute_value(attribute)),
+                },
+            );
+        }
+        result
+    }
+
+    pub fn attribute(self: Node, name: string) -> Option[string] {
+        self.attribute_ns("", name)
+    }
+
+    pub fn attribute_ns(self: Node, namespace: string, name: string) -> Option[string] {
+        let (value, found) = bindings::attribute_value_by_name(
+            self.raw,
+            ffi::string_from_text(namespace),
+            ffi::string_from_text(name),
+        );
+        if found {
+            Some(text(value))
+        } else {
+            None
+        }
+    }
+
+    pub fn text(self: Node) -> Result[string, Error] {
+        let (value, error) = bindings::text(self.raw, self.limits.max_output_bytes);
+        check(error)?;
+        Ok(text(value))
+    }
+
+    pub fn outer_html(self: Node) -> Result[string, Error] {
+        let (value, error) = bindings::render(self.raw, false, self.limits.max_output_bytes);
+        check(error)?;
+        Ok(text(value))
+    }
+
+    pub fn inner_html(self: Node) -> Result[string, Error] {
+        let (value, error) = bindings::render(self.raw, true, self.limits.max_output_bytes);
+        check(error)?;
+        Ok(text(value))
+    }
+
+    pub fn matches(self: Node, selector: string) -> Result[bool, Error] {
+        let (value, error) = bindings::matches(
+            self.raw,
+            ffi::string_from_text(selector),
+            self.limits.max_selector_bytes,
+        );
+        check(error)?;
+        Ok(value)
+    }
+
+    pub fn select(self: Node, selector: string) -> Result[Vec[Node], Error] {
+        self.select_with(selector, false)
+    }
+
+    pub fn select_first(self: Node, selector: string) -> Result[Option[Node], Error] {
+        let nodes = self.select_with(selector, true)?;
+        if nodes.len() == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(nodes.get(0)))
+        }
+    }
+
+    fn select_with(self: Node, selector: string, first: bool) -> Result[Vec[Node], Error] {
+        let (nodes, error) = bindings::select(
+            self.raw,
+            ffi::string_from_text(selector),
+            self.limits.max_selector_bytes,
+            self.limits.max_matches,
+            first,
+        );
+        check(error)?;
+        let result = Vec::new();
+        for raw in ffi::slice_to_vec_copy(nodes) {
+            result.push(Node { raw, limits: self.limits });
+        }
+        Ok(result)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum SanitizePolicy {
+    TextOnly,
+    RichText,
+}
+
+pub fn sanitize(input: string, policy: SanitizePolicy, limits: Limits) -> Result[string, Error] {
+    limits.validate()?;
+    let (value, error) = bindings::sanitize(
+        ffi::string_from_text(input),
+        policy == SanitizePolicy::RichText,
+        limits.max_input_bytes,
+        limits.max_nodes,
+        limits.max_depth,
+        limits.max_output_bytes,
+    );
+    check(error)?;
+    Ok(text(value))
+}

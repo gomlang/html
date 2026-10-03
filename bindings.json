@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "package": "bindings",
+  "output": "dom/bindings/generated.goml",
+  "go_package": "native",
+  "go_output": "native/generated.go",
+  "go_import_path": "example.com/goml-ecosystem/html/native",
+  "functions": [
+    {
+      "name": "error_code",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "ErrorCode"
+    },
+    {
+      "name": "error_message",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "ErrorMessage"
+    },
+    {
+      "name": "parse",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Parse"
+    },
+    {
+      "name": "parse_fragment",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "ParseFragment"
+    },
+    {
+      "name": "is_nil",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "IsNil"
+    },
+    {
+      "name": "kind",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Kind"
+    },
+    {
+      "name": "data",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Data"
+    },
+    {
+      "name": "namespace",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Namespace"
+    },
+    {
+      "name": "parent",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Parent"
+    },
+    {
+      "name": "first_child",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "FirstChild"
+    },
+    {
+      "name": "next_sibling",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "NextSibling"
+    },
+    {
+      "name": "same_node",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "SameNode"
+    },
+    {
+      "name": "attributes",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Attributes"
+    },
+    {
+      "name": "attribute_name",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "AttributeName"
+    },
+    {
+      "name": "attribute_value",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "AttributeValue"
+    },
+    {
+      "name": "attribute_namespace",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "AttributeNamespace"
+    },
+    {
+      "name": "attribute_value_by_name",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "AttributeValueByName"
+    },
+    {
+      "name": "render",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Render"
+    },
+    {
+      "name": "text",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Text"
+    },
+    {
+      "name": "matches",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Matches"
+    },
+    {
+      "name": "select",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Select"
+    },
+    {
+      "name": "sanitize",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Sanitize"
+    }
+  ],
+  "types": [
+    {
+      "name": "Node",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Node"
+    },
+    {
+      "name": "Attribute",
+      "import_path": "example.com/goml-ecosystem/html/adapter",
+      "symbol": "Attribute"
+    }
+  ]
+}

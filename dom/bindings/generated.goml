@@ -1,0 +1,87 @@
+package bindings;
+
+use std::ffi;
+
+#[go_type("example.com/goml-ecosystem/html/adapter", "Attribute")]
+pub extern type Attribute;
+
+#[go_type("example.com/goml-ecosystem/html/adapter", "Node")]
+pub extern type Node;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_attribute_name")]
+pub extern fn attribute_name(p0: Attribute) -> ffi::String;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_attribute_namespace")]
+pub extern fn attribute_namespace(p0: Attribute) -> ffi::String;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_attribute_value")]
+pub extern fn attribute_value(p0: Attribute) -> ffi::String;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_attribute_value_by_name")]
+pub extern fn attribute_value_by_name(p0: Node, p1: ffi::String, p2: ffi::String) -> (
+    ffi::String,
+    bool,
+);
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_attributes")]
+pub extern fn attributes(p0: Node) -> ffi::RawSlice[Attribute];
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_data")]
+pub extern fn data(p0: Node) -> ffi::String;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_error_code")]
+pub extern fn error_code(p0: ffi::Error) -> isize;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_error_message")]
+pub extern fn error_message(p0: ffi::Error) -> ffi::String;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_first_child")]
+pub extern fn first_child(p0: Node) -> Node;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_is_nil")]
+pub extern fn is_nil(p0: Node) -> bool;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_kind")]
+pub extern fn kind(p0: Node) -> isize;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_matches")]
+pub extern fn matches(p0: Node, p1: ffi::String, p2: isize) -> (bool, ffi::Error);
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_namespace")]
+pub extern fn namespace(p0: Node) -> ffi::String;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_next_sibling")]
+pub extern fn next_sibling(p0: Node) -> Node;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_parent")]
+pub extern fn parent(p0: Node) -> Node;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_parse")]
+pub extern fn parse(p0: ffi::String, p1: isize, p2: isize, p3: isize) -> (Node, ffi::Error);
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_parse_fragment")]
+pub extern fn parse_fragment(p0: ffi::String, p1: ffi::String, p2: isize, p3: isize, p4: isize) -> (
+    Node,
+    ffi::Error,
+);
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_render")]
+pub extern fn render(p0: Node, p1: bool, p2: isize) -> (ffi::String, ffi::Error);
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_same_node")]
+pub extern fn same_node(p0: Node, p1: Node) -> bool;
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_sanitize")]
+pub extern fn sanitize(p0: ffi::String, p1: bool, p2: isize, p3: isize, p4: isize, p5: isize) -> (
+    ffi::String,
+    ffi::Error,
+);
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_select")]
+pub extern fn select(p0: Node, p1: ffi::String, p2: isize, p3: isize, p4: bool) -> (
+    ffi::RawSlice[Node],
+    ffi::Error,
+);
+
+#[go_ffi("example.com/goml-ecosystem/html/native", "GomlBind_text")]
+pub extern fn text(p0: Node, p1: isize) -> (ffi::String, ffi::Error);

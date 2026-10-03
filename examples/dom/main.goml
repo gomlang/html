@@ -1,0 +1,21 @@
+package main;
+
+use ecosystem::html::dom;
+
+pub fn title_links(input: string) -> Result[Vec[string], dom::Error] {
+    let document = dom::parse(input, dom::Limits::standard())?;
+    let result = Vec::new();
+    for link in document.select("article > h2 a[href]")? {
+        result.push(link.text()? + ": " + link.attribute("href").unwrap_or(""));
+    }
+    Ok(result)
+}
+
+fn main() -> () {
+    match title_links("<article><h2><a href='/guide'>GoML guide</a></h2></article>") {
+        Ok(links) => for link in links {
+            println(link);
+        },
+        Err(error) => println(error.to_string()),
+    }
+}

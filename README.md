@@ -1,7 +1,14 @@
 # HTML utilities
 
-Pure GoML, independently versioned HTML utilities. This module owns shared
-escaping mechanics, not template context analysis or an HTML sanitizer.
+Independently versioned HTML utilities. The root `ecosystem::html` package keeps
+its pure GoML escaping and entity APIs. `ecosystem::html::dom` adds HTML5 document
+parsing, CSS selectors and conservative allowlist sanitization through pinned Go
+backends. Contextual template analysis remains the caller's responsibility.
+
+The module now declares a native Go adapter. With the current GoML driver, all
+consuming modules need a module-root `go.mod`, including applications that only
+use entity helpers or depend on HTML through Template/Markdown. See the native
+setup below when upgrading.
 
 `escape(value, max_bytes)` escapes ampersand, angle brackets and both quotes,
 using numeric quote references. `escape_with(value, options, max_bytes)` selects
@@ -86,6 +93,142 @@ with provenance in [data/README.md](data/README.md) and its retained
 wrapper; no Python installation or runtime data file access is required by HTML.
 
 Run `(cd ../verification && just ecosystem-test html template markdown)` from this library repository.
+
+## DOM, CSS selectors and sanitization
+
+```goml
+use ecosystem::html::dom;
+
+fn extract(input: string) -> Result[Vec[string], dom::Error] {
+    let document = dom::parse(input, dom::Limits::standard())?;
+    let titles = Vec::new();
+    for heading in document.select("article > h2")? {
+        titles.push(heading.text()?);
+    }
+    Ok(titles)
+}
+```
+
+`parse(input, limits)` uses the HTML5 tree constructor with scripting enabled:
+it supplies implicit `html`, `head` and `body` nodes, closes paragraphs, repairs
+misnested formatting and applies table foster parenting. HTML syntax recovery is
+part of parsing; malformed HTML ordinarily produces a recovered tree rather than
+a validation error. This does not execute scripts or load referenced resources.
+
+`parse_fragment(input, context, limits)` returns a synthetic document whose
+children are the fragment nodes. The context is a recognized lowercase HTML
+element, for example `div`, `table`, `select` or `textarea`; these contexts have
+different parsing rules. Foreign namespace and custom-element contexts are not
+accepted. Parsed documents may contain SVG/MathML nodes, and `namespace()` plus
+`attribute_ns(namespace, name)` preserve their namespace information.
+
+`Document::root`, `select`, `select_first` and `to_html` expose the immutable tree.
+Nodes provide `kind`, `name`, `namespace`, `value`, `parent`, `first_child`,
+`next_sibling`, `children`, `same_node`, `attributes`, `attribute` and
+`attribute_ns`. Attributes are copied records with `namespace`, `name`, `value`.
+HTML element/attribute names are normalized by the parser; attribute lookup is
+case-sensitive and returns the first matching attribute. `value()` reads text or
+comment data; `text()` concatenates descendant text without layout whitespace or
+visibility processing. It includes script/style text when present in an
+unsanitized tree. `inner_html` and `outer_html` produce HTML serialization rather
+than preserving original formatting. These methods do not sanitize their output.
+
+`select` returns matching descendants in document order, excluding the node on
+which it is called; selector groups deduplicate matches. `select_first` stops at
+the first match. `matches` tests the node itself. Supported selectors come from
+[Cascadia](https://github.com/andybalholm/cascadia), including element/ID/class,
+attribute operators, combinators, groups, `:not` and `:nth-child`. Invalid syntax
+returns `ErrorKind::Selector`. This is static tree matching, without browser
+layout, interactive pseudo-class state or a promise of complete Selectors Level 4
+support. A selector can inspect ancestors outside the selected subtree, as with
+ordinary descendant queries.
+
+`Limits::standard()` supplies:
+
+| Limit | Default | Enforcement |
+| --- | --- | --- |
+| `max_input_bytes` | 1 MiB | Before parsing |
+| `max_nodes` | 100,000 | After tree construction, including implicit/root nodes |
+| `max_depth` | 256 | Root depth is zero; checked after construction; maximum setting 512 |
+| `max_output_bytes` | 4 MiB | Bounded text/render/sanitizer writers |
+| `max_selector_bytes` | 4,096 | Before selector compilation; absolute ceiling 4,096 |
+| `max_matches` | 10,000 | Before appending each result; exceeding it returns no partial vector |
+
+Nodes must be at least one; other limits must be nonnegative. Selector nesting
+has an additional hard ceiling of 32. The HTML backend independently rejects an
+open-element stack deeper than 512. Input limits bound admitted source bytes;
+node/depth limits validate the resulting tree and do not cap parser allocations
+or process memory before construction. There is no CPU-time deadline. Node
+handles keep their document alive, share an immutable tree and support concurrent
+read operations. They need no explicit close.
+
+`sanitize(input, SanitizePolicy::RichText, limits)` returns HTML for an ordinary
+HTML body/div context. It uses the HTML5 parser, [bluemonday](https://github.com/microcosm-cc/bluemonday),
+then reparses and rechecks until both the allowlist and serialization stabilize.
+It returns `UnstableSanitization` after four unsuccessful passes. Input, tree and
+output budgets apply to intermediate normalization as well, so a large input
+whose final cleaned result would be small may still fail a budget. Failures
+return no partial string.
+
+The rich-text policy allows paragraphs, headings, emphasis, lists, code,
+blockquotes, tables, links, spans and divs. It permits `title` attributes and link
+`href` values using HTTP, HTTPS, mailto or relative URLs, adding `nofollow
+noreferrer` to retained links. It drops event handlers, CSS, IDs/names, data
+attributes, forms, images and embedded media. Script, style, foreign SVG/MathML,
+template, iframe and other active/rawtext containers lose their content. Protocol
+relative links count as relative URLs; permitted destinations can still lead to
+untrusted sites. This API is an HTML allowlist, not a link destination/tracking
+policy.
+
+`SanitizePolicy::TextOnly` removes markup and active-container content but returns
+escaped HTML text: `A &amp; B` stays escaped for HTML insertion. To obtain literal
+text, parse the result and call `root().text()`. Neither policy produces content
+for JavaScript, CSS, attributes, URLs, foreign XML, table/select-specific insertion
+contexts or a client framework's expression language. Do not interpolate the
+result into those contexts or add untrusted markup after sanitizing. Sanitizer
+regressions cover obfuscated URLs, rawtext, foreign content and mutation patterns;
+they do not establish a guarantee for every browser or future browser behavior.
+
+## Native setup and verification
+
+DOM support uses `golang.org/x/net` v0.59.0, Cascadia v1.3.5 and bluemonday v1.0.27.
+Dependencies and checksums are pinned in `go.mod`/`go.sum`; no cgo is needed. Go
+1.26 or newer is required. Prepare the native dependencies with `go mod download`
+from this repository before compilation in an environment without cached modules.
+
+A consumer supplies its own minimal Go module, for example:
+
+```go
+module example.com/my-html-app
+
+go 1.26.0
+```
+
+GoML resolves the native adapter from the selected GoML dependency and creates
+managed requirements/replacements under the consumer's artifact directory. Do
+not add machine-local `replace` paths to published manifests. Existing root
+entity API signatures and behavior are retained; the additional Go module setup
+is required even when the consumer does not import `dom`.
+
+`goml bind-go bindings.json` regenerates the explicitly allowlisted raw boundary.
+The handwritten adapter is in `adapter/`; `native/generated.go`,
+`dom/bindings/generated.goml` and the ownership manifest are generated together.
+Do not edit them directly. The public API performs explicit Go/GoML conversions.
+
+```sh
+go mod download
+goml bind-go bindings.json
+goml fmt --check
+goml test
+goml verify --timeout 300s
+go test -race ./adapter
+```
+
+The `examples/dom/` consumer demonstrates extraction and sanitization. Native
+tests include an independent 18-case html5lib adoption-agency fixture with its
+license/provenance in `adapter/testdata`, fixed tree/render/selector expectations,
+hostile sanitizer vectors and concurrent immutable operations. Existing entity
+tests and the entity-only `examples/basic/` consumer remain in the test suite.
 
 ## Development and examples
 
