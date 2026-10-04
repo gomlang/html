@@ -93,8 +93,12 @@ pub fn escape_with(value: string, options: EscapeOptions, max_bytes: isize) -> R
     if max_bytes < 0 {
         return Result::Err(Error::InvalidLimit(max_bytes))
     }
-    if escaped_len(value, options)? > max_bytes {
+    let length = escaped_len(value, options)?;
+    if length > max_bytes {
         return Result::Err(Error::LimitExceeded(max_bytes))
+    }
+    if length == value.byte_len() {
+        return Result::Ok(value)
     }
     Result::Ok(encode(value, options))
 }

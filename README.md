@@ -15,6 +15,8 @@ using numeric quote references. `escape_with(value, options, max_bytes)` selects
 apostrophe escaping and numeric versus named double-quote references explicitly.
 Negative limits fail; exact output length is checked before output allocation.
 `escaped_len` computes that byte length with overflow checking.
+These bounded helpers reuse the original string when no character needs
+escaping, without allocating an output buffer.
 
 `escape_text` is the unbounded legacy-compatible text helper: double quotes become
 `&quot;`, apostrophes remain unchanged. It is not suitable for single-quoted
