@@ -189,3 +189,35 @@ fn streaming_failed_chunks_leave_shared_state_at_the_last_successful_call() -> (
         ),
     );
 }
+
+#[test]
+fn literal_chunks_preserve_counters_between_completed_references() -> () {
+    for context in[html::DecodeContext::Text, html::DecodeContext::Attribute] {
+        let stream = testing::expect_ok(
+            html::Decoder::new(
+                context,
+                html::DecodeLimits { max_input_bytes: 100, max_output_bytes: 9 },
+            ),
+            "decoder",
+        );
+        testing::assert_eq(testing::expect_ok(stream.push("界"), "literal"), "界");
+        testing::assert_eq(testing::expect_ok(stream.push("&am"), "reference prefix"), "");
+        testing::assert_eq(testing::expect_ok(stream.push("p;"), "reference end"), "&");
+        testing::assert_eq(testing::expect_ok(stream.push("🙂!"), "literal after reference"), "🙂!");
+        testing::assert_eq(stream.input_bytes(), 13);
+        testing::assert_eq(stream.output_bytes(), 9);
+        testing::assert_eq(stream.buffered_bytes(), 0);
+        testing::assert_eq(testing::expect_ok(stream.push(""), "empty chunk at limit"), "");
+        testing::assert_eq(
+            testing::expect_err(stream.push("x"), "literal output limit"),
+            html::DecodeError::OutputLimit,
+        );
+        testing::assert_eq(stream.input_bytes(), 13);
+        testing::assert_eq(stream.output_bytes(), 9);
+        testing::assert_eq(stream.buffered_bytes(), 0);
+        testing::assert_eq(
+            testing::expect_err(stream.finish(), "sticky literal failure"),
+            html::DecodeError::OutputLimit,
+        );
+    }
+}

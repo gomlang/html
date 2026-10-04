@@ -56,6 +56,15 @@ pub struct Decoder {
     finished: Ref[bool],
 }
 
+fn contains_ampersand(value: string) -> bool {
+    for index in 0..value.byte_len() {
+        if value.byte_get(index) == b'&' {
+            return true
+        }
+    }
+    false
+}
+
 impl Decoder {
     pub fn new(context: DecodeContext, limits: DecodeLimits) -> Result[Decoder, DecodeError] {
         if limits.max_input_bytes < 0 || limits.max_output_bytes < 0 {
@@ -114,8 +123,16 @@ impl Decoder {
         if chunk.byte_len() > self.limits.max_input_bytes - self.input.get() {
             return Result::Err(DecodeError::InputLimit)
         }
-        let output = text::StringBuilder::new();
         let mut state = self.state.get();
+        if state.mode == 0 && !contains_ampersand(chunk) {
+            if chunk.byte_len() > self.limits.max_output_bytes - self.output.get() {
+                return Result::Err(DecodeError::OutputLimit)
+            }
+            self.input.set(self.input.get() + chunk.byte_len());
+            self.output.set(self.output.get() + chunk.byte_len());
+            return Result::Ok(chunk)
+        }
+        let output = text::StringBuilder::new();
         for ch in chunk.chars() {
             let scalar = ch.to_string();
             let ascii = scalar.byte_len() == 1;

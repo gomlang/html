@@ -63,7 +63,9 @@ which tokenizer state a caller is in. These utilities do not tokenize HTML.
 conversion. `push(chunk)` accepts complete UTF-8 strings and returns available
 output; references may cross any string boundary. It retains at most 32 pending
 name/prefix bytes and a saturated numeric accumulator, even for arbitrarily long
-digit runs. `finish()` applies the same EOF rules as whole-string decoding:
+digit runs. With no reference pending, chunks containing no ampersand are returned
+directly without allocating a decoded copy. `finish()` applies the same EOF rules
+as whole-string decoding:
 semicolon-free legacy/numeric references decode, while `&`, `&#` and `&#x` remain
 literal. A successful finish closes the decoder; later push/finish calls return
 `DecodeError::Finished`.
