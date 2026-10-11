@@ -96,7 +96,7 @@ with provenance in [data/README.md](data/README.md) and its retained
 `../markdown/tools` generates both this module's lookup and Markdown's compatibility
 wrapper; no Python installation or runtime data file access is required by HTML.
 
-Run `(cd ../verification && just ecosystem-test html template markdown)` from this library repository.
+Run `(cd ../workflows && just ecosystem-test html template markdown)` from this library repository.
 
 ## DOM, CSS selectors and sanitization
 
@@ -247,7 +247,7 @@ go mod download
 goml bind-go bindings.json
 goml fmt --check
 goml test
-(cd ../verification && just ecosystem-test html)
+(cd ../workflows && just ecosystem-test html)
 go test -race ./adapter
 ```
 
@@ -259,12 +259,12 @@ tests and the entity-only `examples/basic/` consumer remain in the test suite.
 
 ## Development and examples
 
-Requires the [current GoML toolchain](https://github.com/gomlang/verification/blob/main/ci/toolchain.json) with unversioned registry support. The `examples/basic/` example shares the root manifest. From the library root, run:
+Requires the [current GoML toolchain](https://github.com/gomlang/workflows/blob/main/ci/toolchain.json) with unversioned registry support. The `examples/basic/` example shares the root manifest. From the library root, run:
 
 ```sh
 goml run --example basic
 goml test
-(cd ../verification && just ecosystem-test html)
+(cd ../workflows && just ecosystem-test html)
 ```
 
-`goml test` builds the example and runs its tests. `(cd ../verification && just ecosystem-test html)` runs the library-specific smoke and compatibility checks.
+`goml test` builds the example and runs its tests. `(cd ../workflows && just ecosystem-test html)` runs the library-specific smoke and compatibility checks.
