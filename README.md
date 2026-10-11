@@ -247,7 +247,7 @@ go mod download
 goml bind-go bindings.json
 goml fmt --check
 goml test
-goml verify --timeout 300s
+(cd ../verification && just ecosystem-test html)
 go test -race ./adapter
 ```
 
@@ -259,12 +259,12 @@ tests and the entity-only `examples/basic/` consumer remain in the test suite.
 
 ## Development and examples
 
-Requires GoML 0.1.56 or newer. The `examples/basic/` example shares the root manifest. From the library root, run:
+Requires the [current GoML toolchain](https://github.com/gomlang/verification/blob/main/ci/toolchain.json) with unversioned registry support. The `examples/basic/` example shares the root manifest. From the library root, run:
 
 ```sh
 goml run --example basic
 goml test
-goml verify --timeout 300s
+(cd ../verification && just ecosystem-test html)
 ```
 
-`goml test` builds the example and runs its tests. `goml verify` repeats the example checks as an independent module against an isolated registry snapshot. `(cd ../verification && just ecosystem-test html)` also retains the library-specific smoke and compatibility checks.
+`goml test` builds the example and runs its tests. `(cd ../verification && just ecosystem-test html)` runs the library-specific smoke and compatibility checks.
