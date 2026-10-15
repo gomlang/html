@@ -237,14 +237,13 @@ not add machine-local `replace` paths to published manifests. Existing root
 entity API signatures and behavior are retained; the additional Go module setup
 is required even when the consumer does not import `dom`.
 
-`goml bind-go bindings.json` regenerates the explicitly allowlisted raw boundary.
-The handwritten adapter is in `adapter/`; `native/generated.go`,
-`dom/bindings/generated.goml` and the ownership manifest are generated together.
-Do not edit them directly. The public API performs explicit Go/GoML conversions.
+The explicit GoML declarations in `dom/bindings/bindings.goml` call the Go
+bridge in `native/bindings.go`, backed by `adapter/`. Maintain these signatures
+together; the final Go build checks their compatibility. The public API performs
+explicit Go/GoML conversions.
 
 ```sh
 go mod download
-goml bind-go bindings.json
 goml fmt --check
 goml test
 (cd ../workflows && just ecosystem-test html)
