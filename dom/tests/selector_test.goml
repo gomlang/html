@@ -1,0 +1,306 @@
+package tests;
+
+use ecosystem::html::dom;
+use std::testing;
+use std::text;
+
+fn selector_document(input: string) -> dom::Document {
+    testing::expect_ok(dom::parse_fragment(input, "div", dom::Limits::standard()), "selector tree")
+}
+
+fn selector_ids(document: dom::Document, selector: string) -> string {
+    let mut result = "";
+    for node in testing::expect_ok(document.select(selector), selector) {
+        if result != "" {
+            result = result + ",";
+        }
+        result = result + node.attribute("id").unwrap_or(node.name());
+    }
+    result
+}
+
+fn selector_error(document: dom::Document, selector: string, expected: dom::ErrorKind) -> () {
+    match document.select(selector) {
+        Err(error) => testing::assert_eq(error.kind, expected),
+        _ => testing::fail("selector unexpectedly succeeded: " + selector),
+    }
+    match document.select_first(selector) {
+        Err(error) => testing::assert_eq(error.kind, expected),
+        _ => testing::fail("first selector unexpectedly succeeded: " + selector),
+    }
+}
+
+#[test]
+fn selector_common_queries_preserve_adapter_coverage() -> () {
+    let document = selector_document(
+        "<article lang='en'><h2><a href='/a'>title</a></h2><ul><li class='x'>a</li><li>b</li><li class='x'>c</li></ul><p title='a\"b'>text</p></article>",
+    );
+    for (query, count) in[
+        ("article > h2 a[href]", 1),
+        ("li:nth-child(2n + 1)", 2),
+        ("li:not(.x)", 1),
+        ("article:has(h2 > a)", 1),
+        ("li:first-child ~ li", 2),
+        ("li + li", 2),
+        ("article/**/>/**/h2 a", 1),
+        ("p:lang(en)", 1),
+        ("[title=\"a\\\"b\"]", 1),
+        ("h2, li.x", 3),
+        ("li:only-child", 0),
+        ("article:haschild(h2)", 1),
+        ("article:haschild(a)", 0),
+        ("article:not(:has(aside)):has(ul > li.x)", 1),
+    ] {
+        testing::assert_eq(testing::expect_ok(document.select(query), query).len(), count);
+    }
+}
+
+#[test]
+fn selector_attributes_cover_operators_case_and_escapes() -> () {
+    let document = selector_document(
+        "<span id='a' data-v='Alpha beta'></span><span id='b' data-v='alpha-beta'></span><span id='c' data-v='alphabet'></span><span id='d' data-v=''></span><span id='e' data-v='  '></span><span id='f'></span>",
+    );
+    for (query, expected) in[
+        ("span[data-v]", "a,b,c,d,e"),
+        ("span[data-v='Alpha beta']", "a"),
+        ("span[DATA-V='ALPHA BETA' i]", "a"),
+        ("span[data-v!='Alpha beta']", "b,c,d,e,f"),
+        ("span[data-v~='beta']", "a"),
+        ("span[data-v|=alpha]", "b"),
+        ("span[data-v^=alpha]", "b,c"),
+        ("span[data-v^=alpha I]", "a,b,c"),
+        ("span[data-v$=beta]", "a,b"),
+        ("span[data-v*=ha]", "a,b,c"),
+        ("span[data-v^='']", "a,b,c"),
+        ("span[data-v~='']", "e"),
+        ("span[data-v='\\41 lpha beta']", "a"),
+        ("span[data-v='Alpha\\\nbeta']", ""),
+    ] {
+        testing::assert_eq(selector_ids(document, query), expected);
+    }
+    let unicode = selector_document(
+        "<i id='kelvin' data-v='K'></i><i id='sigma' data-v='ς'></i><i id='sharp' data-v='ß'></i><i id='accent' data-v='ÉLAN'></i>",
+    );
+    testing::assert_eq(selector_ids(unicode, "i[data-v='k' i]"), "kelvin");
+    testing::assert_eq(selector_ids(unicode, "i[data-v='Σ' i]"), "sigma");
+    testing::assert_eq(selector_ids(unicode, "i[data-v='ss' i]"), "");
+    testing::assert_eq(selector_ids(unicode, "i[data-v^='él' i]"), "accent");
+    testing::assert_eq(selector_ids(unicode, "i[data-v='\\212a' i]"), "kelvin");
+}
+
+#[test]
+fn selector_combinators_groups_and_scope_preserve_order() -> () {
+    let document = selector_document(
+        "<article id='outer'><ul id='list'><li id='a' class='x'>a</li>\n<!-- gap --><li id='b'>b<b id='bold'>!</b></li><li id='c' class='x'>c</li></ul><p id='last'>end</p></article>",
+    );
+    for (query, expected) in[
+        ("#list > li.x", "a,c"),
+        ("li + li", "b,c"),
+        ("li:first-child ~ li", "b,c"),
+        ("ul li b", "bold"),
+        ("li,.x,#bold", "a,b,bold,c"),
+        ("ul/**/li", "a,b,c"),
+        ("li:not(.x,#c)", "b"),
+        ("article:has(li + li), ul:haschild(li.x)", "outer,list"),
+    ] {
+        testing::assert_eq(selector_ids(document, query), expected);
+    }
+    let list = testing::expect_some(testing::expect_ok(document.select_first("ul"), "list"), "list");
+    testing::assert_eq(testing::expect_ok(list.select("ul"), "scope excluded").len(), 0);
+    testing::assert_eq(testing::expect_ok(list.select("article li"), "outside ancestor").len(), 3);
+    testing::assert(testing::expect_ok(list.matches("article > ul"), "scope itself"));
+    let middle = testing::expect_some(
+        testing::expect_ok(list.select_first("li + li"), "first"),
+        "middle",
+    );
+    testing::assert_eq(testing::expect_some(middle.attribute("id"), "middle ID"), "b");
+}
+
+#[test]
+fn selector_structural_pseudoclasses_and_nth_formulas() -> () {
+    let document = selector_document(
+        "<div id='parent'><p id='a'></p>text<!-- gap --><b id='b'></b><p id='c'> </p><p id='d'><!-- empty --></p><i id='e'>x</i></div>",
+    );
+    for (query, expected) in[
+        ("#parent > :nth-child(odd)", "a,c,e"),
+        ("#parent > :nth-child(EVEN)", "b,d"),
+        ("#parent > :nth-child(-n + 3)", "a,b,c"),
+        ("#parent > :nth-child(+2n-1)", "a,c,e"),
+        ("#parent > :nth-child(0n+2)", "b"),
+        ("#parent > :nth-child(-1)", ""),
+        ("#parent > :nth-last-child(2n)", "b,d"),
+        ("p:nth-of-type(2)", "c"),
+        ("p:nth-last-of-type(2)", "c"),
+        ("p:first-child", "a"),
+        ("i:last-child", "e"),
+        ("p:first-of-type", "a"),
+        ("p:last-of-type", "d"),
+        ("#parent > :only-of-type", "b,e"),
+        ("#parent > :only-child", ""),
+        ("#parent > :empty", "a,b,c,d"),
+        ("#parent > :nth-child(9223372036854775807)", ""),
+    ] {
+        testing::assert_eq(selector_ids(document, query), expected);
+    }
+    testing::assert_eq(selector_ids(document, ":root"), "parent");
+    let singleton = selector_document("<div><span id='only'></span></div>");
+    testing::assert_eq(selector_ids(singleton, "span:only-child:only-of-type"), "only");
+}
+
+#[test]
+fn selector_form_state_preserves_legend_and_option_semantics() -> () {
+    let document = selector_document(
+        "<fieldset id='field' disabled><legend><input id='first'></legend><legend><input id='second'></legend><input id='third'></fieldset><input id='check' type='CHECKBOX' checked><input id='text' checked><select id='select'><optgroup id='group' disabled><option id='option' selected>one</option></optgroup></select><textarea id='area' disabled></textarea><button id='button'></button><a id='link' href='/'>link</a><a id='bare'>bare</a>",
+    );
+    testing::assert_eq(selector_ids(document, ":disabled"), "field,second,third,group,area");
+    testing::assert_eq(
+        selector_ids(document, ":enabled"),
+        "first,check,text,select,option,button,link",
+    );
+    testing::assert_eq(selector_ids(document, ":checked"), "check,option");
+    testing::assert_eq(selector_ids(document, ":link"), "link");
+    testing::assert_eq(
+        selector_ids(document, ":input"),
+        "first,second,third,check,text,select,area,button",
+    );
+}
+
+#[test]
+fn selector_language_and_namespaced_attributes_preserve_matching() -> () {
+    let document = selector_document(
+        "<div lang='en-US'><p id='english'>text</p><p id='override' lang='fr'>texte</p></div><p id='upper' lang='EN'>upper</p><svg><a id='foreign' xlink:href='#x'></a></svg>",
+    );
+    testing::assert_eq(selector_ids(document, "p:lang(EN)"), "english,override");
+    testing::assert_eq(selector_ids(document, "p:lang(fr)"), "override");
+    testing::assert_eq(selector_ids(document, "a[href]"), "foreign");
+    let english = testing::expect_some(
+        testing::expect_ok(document.select_first("#english"), "English"),
+        "English",
+    );
+    let text = testing::expect_some(english.first_child(), "text");
+    testing::assert(testing::expect_ok(text.matches(":lang(en)"), "inherited language"));
+    testing::assert(!testing::expect_ok(text.matches("*"), "universal element"));
+    let foreign = testing::expect_some(
+        testing::expect_ok(document.select_first("#foreign"), "foreign"),
+        "foreign",
+    );
+    testing::assert(foreign.attribute("href").is_none());
+    testing::assert_eq(
+        testing::expect_some(foreign.attribute_ns("xlink", "href"), "namespaced href"),
+        "#x",
+    );
+}
+
+#[test]
+fn selector_unsupported_syntax_and_byte_nesting_bounds() -> () {
+    let document = selector_document("<p title='x'>text</p>");
+    for query in[
+        "",
+        "[",
+        "p,",
+        "p >",
+        "> p",
+        "p::before",
+        ":hover",
+        ":visited",
+        ":contains(x)",
+        ":matches(x)",
+        "[title#='x']",
+        "[title=x s]",
+        "[title='x'",
+        ":has(> p)",
+        ":nth-child(n n)",
+        ":nth-child(2 n)",
+        ":nth-child(odd+1)",
+        ":nth-child(9223372036854775808)",
+        ":lang('en')",
+        "p/*unclosed",
+        "p\\31",
+        ".1x",
+        "[title=\\78]",
+        "[title[x]]",
+        ":\\6e ot(p)",
+        "/*\"*/" + ":not(".repeat(40) + "p" + ")".repeat(40),
+        ":not(".repeat(33) + "p" + ")".repeat(33),
+        ":not(".repeat(32) + "[title]" + ")".repeat(32),
+        "p".repeat(4097),
+    ] {
+        selector_error(document, query, dom::ErrorKind::Selector);
+    }
+    testing::assert_eq(selector_ids(document, ":not(".repeat(32) + "p" + ")".repeat(32)), "p");
+    let limits = dom::Limits::standard();
+    let limited = testing::expect_ok(
+        dom::parse_fragment("<p></p>", "div", dom::Limits { max_selector_bytes: 1, ..limits }),
+        "short selector limit",
+    );
+    testing::assert_eq(selector_ids(limited, "p"), "p");
+    selector_error(limited, "p ", dom::ErrorKind::Selector);
+    let generous = testing::expect_ok(
+        dom::parse_fragment("<p></p>", "div", dom::Limits { max_selector_bytes: 5000, ..limits }),
+        "hard selector limit",
+    );
+    selector_error(generous, "p".repeat(4097), dom::ErrorKind::Selector);
+    let none = testing::expect_ok(
+        dom::parse_fragment("<p></p>", "div", dom::Limits { max_matches: 0, ..limits }),
+        "zero matches",
+    );
+    selector_error(none, "p", dom::ErrorKind::MatchLimit);
+    testing::assert_eq(selector_ids(none, "b"), "");
+}
+
+#[test]
+fn selector_work_limits_cover_comments_siblings_and_single_nodes() -> () {
+    let deep = selector_document("<div>".repeat(40) + "leaf" + "</div>".repeat(40));
+    let chain = "absent" + " div".repeat(20);
+    let mut leaf = deep.root();
+    while let Some(child) = leaf.first_child() {
+        leaf = child;
+    }
+    let element = testing::expect_some(leaf.parent(), "leaf parent");
+    for query in[
+        chain,
+        "absent" + "/**/div".repeat(20),
+        "absent" + "\tdiv".repeat(20),
+        ":not(:not(" + chain + "))",
+        ":has(" + chain + ")",
+        ":has(".repeat(12) + "absent" + ")".repeat(12),
+    ] {
+        selector_error(deep, query, dom::ErrorKind::SelectorWorkLimit);
+        match element.matches(query) {
+            Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::SelectorWorkLimit),
+            _ => testing::fail("matches bypassed document structural work bounds"),
+        }
+    }
+    let siblings = selector_document("<div>leaf</div>".repeat(40));
+    for query in["absent" + " ~ div".repeat(20), ":not(:not(absent" + " ~ div".repeat(20) + "))"] {
+        selector_error(siblings, query, dom::ErrorKind::SelectorWorkLimit);
+    }
+    for query in[
+        "absent" + " \\64 iv".repeat(20),
+        ":\\68 as(" + chain + ")",
+        ":\\6e ot(:\\6e ot(" + chain + "))",
+        ":matches(\") " + chain,
+        "[title#=\"x\"] " + chain,
+    ] {
+        selector_error(deep, query, dom::ErrorKind::Selector);
+    }
+}
+
+#[test]
+fn selector_repeated_classes_match_nodes_with_many_attributes() -> () {
+    let source = text::StringBuilder::new();
+    source.write_string("<p class='x'");
+    for index in 0..2000 {
+        source.write_string(f" data-{index}='{index}'");
+    }
+    source.write_string("></p>");
+    let document = selector_document(source.to_string());
+    let query = ".x".repeat(2048);
+    let nodes = testing::expect_ok(document.select(query), "repeated classes with many attributes");
+    testing::assert_eq(nodes.len(), 1);
+    testing::assert_eq(nodes.get(0).attributes().len(), 2001);
+    testing::assert(testing::expect_ok(nodes.get(0).matches(query), "repeated class node match"));
+    testing::assert(
+        testing::expect_ok(document.select_first(query), "repeated class first match").is_some(),
+    );
+}

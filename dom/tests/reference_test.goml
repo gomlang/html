@@ -1,0 +1,154 @@
+package tests;
+
+use ecosystem::html::dom;
+use std::cmp;
+use std::testing;
+use std::text;
+
+fn html5lib_reference_node(node: dom::Node, depth: isize, output: text::StringBuilder) -> () {
+    let prefix = "| " + text::repeat("  ", depth);
+    match node.kind() {
+        dom::NodeKind::Element => {
+            let name = if node.namespace() == "" {
+                node.name()
+            } else {
+                node.namespace() + " " + node.name()
+            };
+            output.write_string(prefix + "<" + name + ">\n");
+            let attributes = node.attributes();
+            attributes.sort_by(|left, right| cmp::compare(left.name, right.name).to_isize());
+            for attribute in attributes {
+                let name = if attribute.namespace == "" {
+                    attribute.name
+                } else {
+                    attribute.namespace + " " + attribute.name
+                };
+                output.write_string(prefix + "  " + name + "=\"" + attribute.value + "\"\n");
+            }
+        },
+        dom::NodeKind::Text => output.write_string(prefix + "\"" + node.value() + "\"\n"),
+        _ => testing::fail("unsupported html5lib reference node kind"),
+    }
+    for child in node.children() {
+        html5lib_reference_node(child, depth + 1, output);
+    }
+}
+
+#[test]
+fn html5lib_adoption_agency_reference_corpus() -> () {
+    let limits = dom::Limits {
+        max_input_bytes: 4096,
+        max_nodes: 1000,
+        max_depth: 256,
+        ..dom::Limits::standard(),
+    };
+    for (input, context, expected) in[
+        (
+            "<a><p></a></p>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|     <p>\n|       <a>",
+        ),
+        (
+            "<a>1<p>2</a>3</p>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       \"1\"\n|     <p>\n|       <a>\n|         \"2\"\n|       \"3\"",
+        ),
+        (
+            "<a>1<button>2</a>3</button>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       \"1\"\n|     <button>\n|       <a>\n|         \"2\"\n|       \"3\"",
+        ),
+        (
+            "<a>1<b>2</a>3</b>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       \"1\"\n|       <b>\n|         \"2\"\n|     <b>\n|       \"3\"",
+        ),
+        (
+            "<a>1<div>2<div>3</a>4</div>5</div>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       \"1\"\n|     <div>\n|       <a>\n|         \"2\"\n|       <div>\n|         <a>\n|           \"3\"\n|         \"4\"\n|       \"5\"",
+        ),
+        (
+            "<table><a>1<p>2</a>3</p>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       \"1\"\n|     <p>\n|       <a>\n|         \"2\"\n|       \"3\"\n|     <table>",
+        ),
+        (
+            "<b><b><a><p></a>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <b>\n|       <b>\n|         <a>\n|         <p>\n|           <a>",
+        ),
+        (
+            "<b><a><b><p></a>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <b>\n|       <a>\n|         <b>\n|       <b>\n|         <p>\n|           <a>",
+        ),
+        (
+            "<a><b><b><p></a>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       <b>\n|         <b>\n|     <b>\n|       <b>\n|         <p>\n|           <a>",
+        ),
+        (
+            "<p>1<s id=\"A\">2<b id=\"B\">3</p>4</s>5</b>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <p>\n|       \"1\"\n|       <s>\n|         id=\"A\"\n|         \"2\"\n|         <b>\n|           id=\"B\"\n|           \"3\"\n|     <s>\n|       id=\"A\"\n|       <b>\n|         id=\"B\"\n|         \"4\"\n|     <b>\n|       id=\"B\"\n|       \"5\"",
+        ),
+        (
+            "<table><a>1<td>2</td>3</table>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       \"1\"\n|     <a>\n|       \"3\"\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"2\"",
+        ),
+        (
+            "<table>A<td>B</td>C</table>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     \"AC\"\n|     <table>\n|       <tbody>\n|         <tr>\n|           <td>\n|             \"B\"",
+        ),
+        (
+            "<a><svg><tr><input></a>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <a>\n|       <svg svg>\n|         <svg tr>\n|           <svg input>",
+        ),
+        (
+            "<div><a><b><div><div><div><div><div><div><div><div><div><div></a>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <div>\n|       <a>\n|         <b>\n|       <b>\n|         <div>\n|           <a>\n|           <div>\n|             <a>\n|             <div>\n|               <a>\n|               <div>\n|                 <a>\n|                 <div>\n|                   <a>\n|                   <div>\n|                     <a>\n|                     <div>\n|                       <a>\n|                       <div>\n|                         <a>\n|                           <div>\n|                             <div>",
+        ),
+        (
+            "<div><a><b><u><i><code><div></a>",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <div>\n|       <a>\n|         <b>\n|           <u>\n|             <i>\n|               <code>\n|       <u>\n|         <i>\n|           <code>\n|             <div>\n|               <a>",
+        ),
+        (
+            "<b><b><b><b>x</b></b></b></b>y",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <b>\n|       <b>\n|         <b>\n|           <b>\n|             \"x\"\n|     \"y\"",
+        ),
+        (
+            "<p><b><b><b><b><p>x",
+            "",
+            "| <html>\n|   <head>\n|   <body>\n|     <p>\n|       <b>\n|         <b>\n|           <b>\n|             <b>\n|     <p>\n|       <b>\n|         <b>\n|           <b>\n|             \"x\"",
+        ),
+        (
+            "<b><em><foo><foob><fooc><aside></b></em>",
+            "div",
+            "| <b>\n|   <em>\n|     <foo>\n|       <foob>\n|         <fooc>\n| <aside>\n|   <b>",
+        ),
+    ] {
+        let document = testing::expect_ok(
+            if context == "" {
+                dom::parse(input, limits)
+            } else {
+                dom::parse_fragment(input, context, limits)
+            },
+            "html5lib adoption case",
+        );
+        let output = text::StringBuilder::new();
+        for child in document.root().children() {
+            html5lib_reference_node(child, 0, output);
+        }
+        let actual = text::trim_end_chars(output.to_string(), "\n");
+        if actual != expected {
+            testing::fail(f"html5lib input {input}\nactual:\n{actual}\nexpected:\n{expected}");
+        }
+    }
+}

@@ -1,0 +1,254 @@
+package tests;
+
+use ecosystem::html::dom;
+use std::testing;
+use std::task;
+
+fn sanitizer_safe_tree(node: dom::Node) -> () {
+    testing::assert_eq(node.namespace(), "");
+    if node.kind() == dom::NodeKind::Element {
+        for unsafe_name in[
+            "script",
+            "style",
+            "svg",
+            "math",
+            "iframe",
+            "object",
+            "embed",
+            "form",
+            "input",
+            "img",
+            "template",
+            "noscript",
+        ] {
+            testing::assert(node.name() != unsafe_name);
+        }
+        for attr in node.attributes() {
+            testing::assert(attr.namespace == "");
+            testing::assert(attr.name == "href" || attr.name == "title" || attr.name == "rel");
+        }
+    }
+    for child in node.children() {
+        sanitizer_safe_tree(child);
+    }
+}
+
+#[test]
+fn sanitizer_hostile_vectors_preserve_fixed_adapter_outputs() -> () {
+    let limits = dom::Limits::standard();
+    for (input, rich, expected) in[
+        ("<script>alert(1)</script><p onclick=\"alert(1)\">ok</p>", true, "<p>ok</p>"),
+        ("<a href=\"javascript:alert(1)\">link</a>", true, "link"),
+        ("<a href=\"jav&#x61;script:alert(1)\">link</a>", true, "link"),
+        ("<a href=\"java\tscript:alert(1)\">link</a>", true, "link"),
+        ("<a href=\"java\nscript:alert(1)\">link</a>", true, "link"),
+        ("<a href=\"&#14;javascript:alert(1)\">link</a>", true, "link"),
+        ("<a href=\"data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;\">link</a>", true, "link"),
+        (
+            "<img src=x onerror=alert(1)><svg><a xlink:href=\"javascript:alert(1)\">x</a></svg>",
+            true,
+            "",
+        ),
+        (
+            "<math><mtext><table><mglyph><style><!--</style><img title=\"--><img src=1 onerror=alert(1)>\">",
+            true,
+            "",
+        ),
+        (
+            "<svg></p><style><a id=\"</style><img src=1 onerror=alert(1)>\">",
+            true,
+            "<p></p>&#34;&gt;",
+        ),
+        (
+            "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\">x</p>",
+            true,
+            "&#34;&gt;x<p></p>",
+        ),
+        ("<svg><foreignObject><p onmouseover=alert(1)>x</p></foreignObject></svg>", true, ""),
+        (
+            "<math><annotation-xml encoding=\"text/html\"><script>alert(1)</script></annotation-xml></math>",
+            true,
+            "",
+        ),
+        ("<template><p><img src=x onerror=alert(1)></p></template>safe", true, "safe"),
+        (
+            "<p style=\"background:url(javascript:alert(1))\" id=\"location\" name=\"cookie\" data-x=\"javascript:alert(1)\">text</p>",
+            true,
+            "<p>text</p>",
+        ),
+        (
+            "<form action=\"javascript:alert(1)\"><input formaction=\"javascript:alert(1)\"></form>",
+            true,
+            "",
+        ),
+        (
+            "<a href=\"https://example.com\" href=\"javascript:alert(1)\">ok</a>",
+            true,
+            "<a href=\"https://example.com\" rel=\"nofollow noreferrer\">ok</a>",
+        ),
+        ("<a href=\"javascript:alert(1)\" href=\"https://example.com\">ok</a>", true, "ok"),
+        (
+            "<table><tr><td><svg><script>alert(1)</script></svg>cell</td></tr></table>",
+            true,
+            "<table><tbody><tr><td>cell</td></tr></tbody></table>",
+        ),
+        ("<plaintext><script>alert(1)</script>", true, ""),
+        ("<script>alert(1)</script><p onclick=\"alert(1)\">ok</p>", false, "ok"),
+        ("<a href=\"javascript:alert(1)\">link</a>", false, "link"),
+        ("<a href=\"jav&#x61;script:alert(1)\">link</a>", false, "link"),
+        ("<a href=\"java\tscript:alert(1)\">link</a>", false, "link"),
+        ("<a href=\"java\nscript:alert(1)\">link</a>", false, "link"),
+        ("<a href=\"&#14;javascript:alert(1)\">link</a>", false, "link"),
+        ("<a href=\"data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;\">link</a>", false, "link"),
+        (
+            "<img src=x onerror=alert(1)><svg><a xlink:href=\"javascript:alert(1)\">x</a></svg>",
+            false,
+            "",
+        ),
+        (
+            "<math><mtext><table><mglyph><style><!--</style><img title=\"--><img src=1 onerror=alert(1)>\">",
+            false,
+            "",
+        ),
+        ("<svg></p><style><a id=\"</style><img src=1 onerror=alert(1)>\">", false, "&#34;&gt;"),
+        (
+            "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\">x</p>",
+            false,
+            "&#34;&gt;x",
+        ),
+        ("<svg><foreignObject><p onmouseover=alert(1)>x</p></foreignObject></svg>", false, ""),
+        (
+            "<math><annotation-xml encoding=\"text/html\"><script>alert(1)</script></annotation-xml></math>",
+            false,
+            "",
+        ),
+        ("<template><p><img src=x onerror=alert(1)></p></template>safe", false, "safe"),
+        (
+            "<p style=\"background:url(javascript:alert(1))\" id=\"location\" name=\"cookie\" data-x=\"javascript:alert(1)\">text</p>",
+            false,
+            "text",
+        ),
+        (
+            "<form action=\"javascript:alert(1)\"><input formaction=\"javascript:alert(1)\"></form>",
+            false,
+            "",
+        ),
+        ("<a href=\"https://example.com\" href=\"javascript:alert(1)\">ok</a>", false, "ok"),
+        ("<a href=\"javascript:alert(1)\" href=\"https://example.com\">ok</a>", false, "ok"),
+        ("<table><tr><td><svg><script>alert(1)</script></svg>cell</td></tr></table>", false, "cell"),
+        ("<plaintext><script>alert(1)</script>", false, ""),
+        (
+            "<p onclick=\"x\">hello <strong>world</strong></p>",
+            true,
+            "<p>hello <strong>world</strong></p>",
+        ),
+        ("<p>Hello &amp; <b>world</b></p><script>secret</script>", false, "Hello &amp; world"),
+        (
+            "<table><tr><td>A</td></tr></table>",
+            true,
+            "<table><tbody><tr><td>A</td></tr></tbody></table>",
+        ),
+        (
+            "<a href=\"https://example.com\">x</a>",
+            true,
+            "<a href=\"https://example.com\" rel=\"nofollow noreferrer\">x</a>",
+        ),
+    ] {
+        let policy = if rich {
+            dom::SanitizePolicy::RichText
+        } else {
+            dom::SanitizePolicy::TextOnly
+        };
+        let clean = testing::expect_ok(dom::sanitize(input, policy, limits), input);
+        testing::assert_eq(clean, expected);
+        let document = testing::expect_ok(dom::parse(clean, limits), "reparse sanitized document");
+        sanitizer_safe_tree(document.root());
+        testing::assert_eq(
+            testing::expect_ok(dom::sanitize(clean, policy, limits), "sanitizer fixed point"),
+            clean,
+        );
+    }
+}
+
+#[test]
+fn sanitizer_budgets_include_intermediate_trees_and_normalization() -> () {
+    let limits = dom::Limits::standard();
+    for (input, budget, kind) in[
+        ("abc", dom::Limits { max_output_bytes: 2, ..limits }, dom::ErrorKind::OutputLimit),
+        (
+            "<script>secret</script>",
+            dom::Limits { max_input_bytes: 2, ..limits },
+            dom::ErrorKind::InputLimit,
+        ),
+        (
+            "<script>secret</script>",
+            dom::Limits { max_output_bytes: 2, ..limits },
+            dom::ErrorKind::OutputLimit,
+        ),
+        (
+            "<script>secret</script>",
+            dom::Limits { max_nodes: 2, ..limits },
+            dom::ErrorKind::NodeLimit,
+        ),
+        ("<p><b>deep</b></p>", dom::Limits { max_depth: 1, ..limits }, dom::ErrorKind::DepthLimit),
+        (
+            "<a href='/x'>x</a>",
+            dom::Limits { max_output_bytes: 20, ..limits },
+            dom::ErrorKind::OutputLimit,
+        ),
+    ] {
+        match dom::sanitize(input, dom::SanitizePolicy::RichText, budget) {
+            Err(error) => testing::assert_eq(error.kind, kind),
+            _ => testing::fail("sanitizer returned output beyond a budget"),
+        }
+    }
+}
+
+#[test]
+fn immutable_dom_operations_support_concurrent_readers() -> () {
+    let limits = dom::Limits::standard();
+    let document = testing::expect_ok(
+        dom::parse_fragment("<p class='x'>hello <b>world</b></p>", "div", limits),
+        "shared immutable tree",
+    );
+    task::scope(
+        |scope| {
+            let workers = Vec::new();
+            for _ in 0..8 {
+                workers.push(
+                    scope.spawn(
+                        |_| {
+                            for _ in 0..20 {
+                                testing::assert_eq(
+                                    testing::expect_ok(
+                                        document.select("p.x > b"),
+                                        "concurrent query",
+                                    ).len(),
+                                    1,
+                                );
+                                testing::assert_eq(
+                                    testing::expect_ok(document.root().text(), "concurrent text"),
+                                    "hello world",
+                                );
+                                testing::assert_eq(
+                                    testing::expect_ok(
+                                        dom::sanitize(
+                                            "<p onclick='x'>ok</p>",
+                                            dom::SanitizePolicy::RichText,
+                                            limits,
+                                        ),
+                                        "concurrent sanitizer",
+                                    ),
+                                    "<p>ok</p>",
+                                );
+                            }
+                        },
+                    ),
+                );
+            }
+            for worker in workers {
+                worker.join();
+            }
+        },
+    );
+}

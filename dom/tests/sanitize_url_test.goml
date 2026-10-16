@@ -1,0 +1,117 @@
+package tests;
+
+use ecosystem::html;
+use ecosystem::html::dom;
+use std::testing;
+
+fn sanitized_link_destination(value: string) -> Option[string] {
+    let escaped = testing::expect_ok(html::escape(value, 100000), "URL attribute escaping");
+    let source = "<a href=\"" + escaped + "\">link</a>";
+    let clean = testing::expect_ok(
+        dom::sanitize(source, dom::SanitizePolicy::RichText, dom::Limits::standard()),
+        "URL sanitization",
+    );
+    let document = testing::expect_ok(
+        dom::parse_fragment(clean, "div", dom::Limits::standard()),
+        "sanitized link fragment",
+    );
+    match testing::expect_ok(document.select_first("a"), "sanitized anchor selection") {
+        Some(node) => node.attribute("href"),
+        None => Option::None,
+    }
+}
+
+#[test]
+fn sanitizer_url_parsing_and_normalization_regressions() -> () {
+    for (input, expected) in[
+        ("", Option::None),
+        ("#", Option::None),
+        ("//", Option::None),
+        ("http:", Option::Some("http:")),
+        ("HTTPS://", Option::Some("https:")),
+        ("http:/path", Option::Some("http:/path")),
+        ("http:///path", Option::Some("http:///path")),
+        ("///host/path", Option::Some("///host/path")),
+        ("//?query", Option::Some("?query")),
+        ("//#fragment", Option::Some("#fragment")),
+        ("*", Option::Some("*")),
+        ("?", Option::Some("?")),
+        ("??", Option::Some("??")),
+        ("relative?", Option::Some("relative?")),
+        ("./a:b", Option::Some("./a:b")),
+        ("a/b:c", Option::Some("a/b:c")),
+        ("/a:b", Option::Some("/a:b")),
+        ("a:b", Option::None),
+        (":path", Option::None),
+        ("1a:path", Option::None),
+        ("https://Example.COM/%2f?q=%zz#%2a", Option::Some("https://Example.COM/%2f?q=%zz#%2a")),
+        ("/%2f/{}", Option::Some("///%7B%7D")),
+        ("/%aa/{}", Option::Some("/%AA/%7B%7D")),
+        ("/%61/界", Option::Some("/a/%E7%95%8C")),
+        ("#%2a界", Option::Some("#*%E7%95%8C")),
+        ("mailto:user@example.com", Option::Some("mailto:user@example.com")),
+        (
+            "MAILTO:user%zz@example.com?subject=%gg",
+            Option::Some("mailto:user%zz@example.com?subject=%gg"),
+        ),
+        ("http:opaque%zz", Option::Some("http:opaque%zz")),
+        ("http:opaque\\path", Option::Some("http:opaque\\path")),
+        ("http://a@b@host/path", Option::Some("http://a%40b@host/path")),
+        ("http://user:pass:more@host", Option::Some("http://user:pass%3Amore@host")),
+        ("http://u%3aser:p%40ss@host", Option::Some("http://u%3Aser:p%40ss@host")),
+        ("http://u!()*@host", Option::Some("http://u%21%28%29%2A@host")),
+        ("http://%c3%a9/%ff", Option::Some("http://%C3%A9/%ff")),
+        ("http://%FF/path", Option::Some("http://%FF/path")),
+        ("http://a%25b/path", Option::Some("http://a%25b/path")),
+        ("http://a]b/path", Option::Some("http://a]b/path")),
+        ("http://a<\"b>/path", Option::Some("http://a<\"b>/path")),
+        ("http://host:", Option::Some("http://host:")),
+        (
+            "http://host:999999999999999999999999999",
+            Option::Some("http://host:999999999999999999999999999"),
+        ),
+        ("http://host:letters", Option::None),
+        ("http://a:b:3/path", Option::None),
+        ("//a:b:3/path", Option::Some("//a:b:3/path")),
+        ("mailto://a:b:3/path", Option::Some("mailto://a:b:3/path")),
+        ("http://[::1]/path", Option::Some("http://[::1]/path")),
+        ("http://[::ffff:192.0.2.1]/path", Option::Some("http://[::ffff:192.0.2.1]/path")),
+        ("http://[2001:DB8::1]:8080/path", Option::Some("http://[2001:DB8::1]:8080/path")),
+        ("http://[::1%25eth0]/path", Option::Some("http://[::1%25eth0]/path")),
+        ("http://[::1%25zone%20one]/path", Option::Some("http://[::1%25zone%20one]/path")),
+        ("http://[::1%25zone%3Ax]/path", Option::Some("http://[::1%25zone:x]/path")),
+        ("http://[::1%25]/path", Option::None),
+        ("http://[::1%25zone%2fx]/path", Option::None),
+        ("http://[127.0.0.1]/path", Option::None),
+        ("http://[::ffff:01.2.3.4]/path", Option::None),
+        ("http://[:::1]/path", Option::None),
+        ("http://x[::1]/path", Option::None),
+        ("javascript:alert(1)", Option::None),
+        ("JavaScript:alert(1)", Option::None),
+        ("vbscript:run", Option::None),
+        ("data:text/html,x", Option::None),
+        ("ftp://example.com", Option::None),
+        ("http://%41.example", Option::None),
+        ("http://u%zz@host", Option::None),
+        ("/bad%escape", Option::None),
+        ("/path#bad%escape", Option::None),
+        ("/path?bad%escape", Option::Some("/path?bad%escape")),
+        (" /path ", Option::Some("/path")),
+        (" https://example.com ", Option::Some("https://example.com")),
+        ("relative", Option::Some("relative")),
+        ("/a b", Option::None),
+        ("/a\tb", Option::None),
+        ("/a\nb", Option::None),
+        ("/a\rb", Option::None),
+        ("/ab", Option::None),
+        ("#ab", Option::Some("#a%7Fb")),
+        ("/path#one#two", Option::Some("/path#one%23two")),
+        ("/path?x=one&y=two", Option::Some("/path?x=one&y=two")),
+        ("/path#brackets[]", Option::Some("/path#brackets[]")),
+    ] {
+        let actual = sanitized_link_destination(input);
+        if actual != expected {
+            testing::fail(f"URL normalization mismatch for {input}");
+        }
+    }
+}

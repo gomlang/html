@@ -1,0 +1,277 @@
+package tests;
+
+use ecosystem::html::dom;
+use std::testing;
+use std::text;
+
+#[test]
+fn fixed_html_tree_construction_regressions() -> () {
+    let limits = dom::Limits {
+        max_input_bytes: 4096,
+        max_nodes: 100,
+        max_depth: 64,
+        max_output_bytes: 4096,
+        ..dom::Limits::standard(),
+    };
+    for (input, context, expected) in[
+        ("<p>one<div>two</div>three", "div", "<p>one</p><div>two</div>three"),
+        ("<b><i>one</b>two</i>", "div", "<b><i>one</i></b><i>two</i>"),
+        (
+            "<table>before<tr><td>cell</td></tr>after</table>",
+            "div",
+            "beforeafter<table><tbody><tr><td>cell</td></tr></tbody></table>",
+        ),
+        ("<tr><td>A<td>B", "table", "<tbody><tr><td>A</td><td>B</td></tr></tbody>"),
+        ("<option>A<option>B", "select", "<option>A</option><option>B</option>"),
+        ("&lt;b&gt;X&lt;/b&gt;", "textarea", "&lt;b&gt;X&lt;/b&gt;"),
+        (
+            "<svg viewBox='0 0 1 1'><circle/></svg>",
+            "div",
+            "<svg viewBox=\"0 0 1 1\"><circle></circle></svg>",
+        ),
+        ("<p title='&quot;&amp;'>界&#x1f642;", "div", "<p title=\"&#34;&amp;\">界🙂</p>"),
+    ] {
+        let document = testing::expect_ok(
+            dom::parse_fragment(input, context, limits),
+            "fixed tree fragment",
+        );
+        testing::assert_eq(testing::expect_ok(document.to_html(), "fixed tree rendering"), expected);
+    }
+    let document = testing::expect_ok(
+        dom::parse(
+            "<!doctype html><title>T</title><p>A",
+            dom::Limits {
+                max_input_bytes: 100,
+                max_nodes: 20,
+                max_depth: 10,
+                max_output_bytes: 200,
+                ..limits,
+            },
+        ),
+        "implicit document elements",
+    );
+    testing::assert_eq(
+        testing::expect_ok(document.to_html(), "implicit document rendering"),
+        "<!DOCTYPE html><html><head><title>T</title></head><body><p>A</p></body></html>",
+    );
+}
+
+#[test]
+fn complete_raw_text_inner_serialization_regressions() -> () {
+    let limits = dom::Limits {
+        max_input_bytes: 4096,
+        max_nodes: 100,
+        max_depth: 64,
+        max_output_bytes: 4096,
+        ..dom::Limits::standard(),
+    };
+    for (input, selector, expected) in[
+        ("<script>if (a < b && c) {}</script>", "script", "if (a < b && c) {}"),
+        ("<style>a>b { content: \"&\" }</style>", "style", "a>b { content: \"&\" }"),
+        ("<noscript>a < b &amp;</noscript>", "noscript", "a < b &amp;"),
+        ("<iframe>a < b &amp;</iframe>", "iframe", "a < b &amp;"),
+        ("<textarea>a &lt; b &amp;</textarea>", "textarea", "a &lt; b &amp;"),
+        ("<svg><script>a &lt; b &amp;</script></svg>", "script", "a &lt; b &amp;"),
+        ("<svg><style>a &lt; b &amp;</style></svg>", "style", "a &lt; b &amp;"),
+        (
+            "<svg><foreignObject><script>a < b && c</script></foreignObject></svg>",
+            "script",
+            "a < b && c",
+        ),
+        (
+            "<math><annotation-xml encoding=\"text/html\"><script>a < b && c</script></annotation-xml></math>",
+            "script",
+            "a < b && c",
+        ),
+        ("<plaintext>a < b &amp;", "plaintext", "a < b &amp;"),
+        ("<svg><plaintext>a &lt; b &amp;</plaintext></svg>", "plaintext", "a &lt; b &amp;"),
+    ] {
+        for limit in[4096, expected.byte_len(), expected.byte_len() - 1] {
+            let document = testing::expect_ok(
+                dom::parse_fragment(input, "div", dom::Limits { max_output_bytes: limit, ..limits }),
+                "raw text fragment",
+            );
+            let node = testing::expect_some(
+                testing::expect_ok(document.select_first(selector), "raw text selection"),
+                "raw text element",
+            );
+            if limit < expected.byte_len() {
+                match node.inner_html() {
+                    Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::OutputLimit),
+                    Ok(_) => testing::fail("raw text rendering must reject a short output limit"),
+                };
+            } else {
+                testing::assert_eq(
+                    testing::expect_ok(node.inner_html(), "raw text rendering"),
+                    expected,
+                );
+            }
+        }
+    }
+    for context in["script", "style", "noscript", "iframe"] {
+        let input = "if (a < b && c) {}";
+        let document = testing::expect_ok(
+            dom::parse_fragment(
+                input,
+                context,
+                dom::Limits { max_output_bytes: input.byte_len(), ..limits },
+            ),
+            "raw fragment context",
+        );
+        testing::assert_eq(testing::expect_ok(document.to_html(), "raw document rendering"), input);
+        testing::assert_eq(
+            testing::expect_ok(document.root().inner_html(), "raw root inner rendering"),
+            input,
+        );
+        testing::assert_eq(
+            testing::expect_ok(document.root().outer_html(), "raw root outer rendering"),
+            input,
+        );
+        let child = testing::expect_some(document.root().first_child(), "raw fragment first child");
+        let parent = testing::expect_some(child.parent(), "raw fragment retained parent");
+        testing::assert_eq(
+            testing::expect_ok(parent.outer_html(), "raw context after navigation"),
+            input,
+        );
+    }
+}
+
+#[test]
+fn head_fragments_expose_only_context_root_children() -> () {
+    for (input, expected) in[
+        ("", ""),
+        ("/", ""),
+        ("\n", "\n"),
+        ("<title>x</title>", "<title>x</title>"),
+    ] {
+        let document = testing::expect_ok(
+            dom::parse_fragment(input, "head", dom::Limits::standard()),
+            "head fragment",
+        );
+        testing::assert_eq(testing::expect_ok(document.to_html(), "head fragment output"), expected);
+    }
+}
+
+#[test]
+fn parser_stack_limits_and_tree_identity_remain_recoverable() -> () {
+    let limits = dom::Limits { max_depth: 512, ..dom::Limits::standard() };
+    let accepted = "<div>".repeat(510) + "leaf" + "</div>".repeat(510);
+    testing::assert_eq(
+        testing::expect_ok(
+            testing::expect_ok(dom::parse_fragment(accepted, "div", limits), "deep accepted tree").root().text(),
+            "deep text",
+        ),
+        "leaf",
+    );
+    match dom::parse_fragment("<div>".repeat(512), "div", limits) {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::Parse),
+        _ => testing::fail("open-element stack ceiling must reject excessive depth"),
+    }
+    for invalid in[
+        dom::Limits { max_input_bytes: -1, ..limits },
+        dom::Limits { max_selector_bytes: -1, ..limits },
+        dom::Limits { max_depth: -1, ..limits },
+    ] {
+        match dom::parse("", invalid) {
+            Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::InvalidLimits),
+            _ => testing::fail("negative parser limit accepted"),
+        }
+    }
+    match dom::parse_fragment("abc", "DIV", dom::Limits { max_input_bytes: 2, ..limits }) {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::InputLimit),
+        _ => testing::fail("input admission must precede fragment-context lookup"),
+    }
+    let first = testing::expect_ok(
+        dom::parse_fragment("<p title='first'>text</p>", "div", limits),
+        "first document",
+    );
+    let second = testing::expect_ok(
+        dom::parse_fragment("<p title='first'>text</p>", "div", limits),
+        "second document",
+    );
+    let element = testing::expect_some(first.root().first_child(), "first element");
+    testing::assert(
+        !element.same_node(testing::expect_some(second.root().first_child(), "second element")),
+    );
+    testing::assert(
+        element.same_node(testing::expect_some(first.root().first_child(), "same element")),
+    );
+    let attrs = element.attributes();
+    attrs.set(0, dom::Attribute { namespace: "", name: "title", value: "changed copy" });
+    testing::assert_eq(
+        testing::expect_some(element.attribute("title"), "original attribute"),
+        "first",
+    );
+}
+
+#[test]
+fn utf8_input_boundary_and_frameset_errors_remain_recoverable() -> () {
+    let limits = dom::Limits::standard();
+    for bytes in[b"\xff", b"\xc0\x80", b"\xed\xa0\x80"] {
+        let (valid, rejected) = string_from_utf8(bytes);
+        testing::assert(!valid);
+        testing::assert_eq(rejected, "");
+    }
+    match dom::parse_fragment("<frameset></frameset>", "head", limits) {
+        Err(error) => testing::assert_eq(error.kind, dom::ErrorKind::Parse),
+        _ => testing::fail("invalid frameset parser state accepted"),
+    }
+}
+
+#[test]
+fn formatting_elements_preserve_many_reverse_ordered_attributes() -> () {
+    let count = 16384;
+    let input = text::StringBuilder::new();
+    input.write_string("<b ");
+    for i in 0..count {
+        input.write_string("z" + (100000 + count - i - 1).to_string() + "=x ");
+    }
+    input.write_string(">ok</b>");
+    let document = testing::expect_ok(
+        dom::parse_fragment(input.to_string(), "div", dom::Limits::standard()),
+        "many formatting attributes",
+    );
+    let element = testing::expect_some(document.root().first_child(), "formatting element");
+    let attrs = element.attributes();
+    testing::assert_eq(attrs.len(), count);
+    for i in 0..count {
+        testing::assert_eq(attrs.get(i).name, "z" + (100000 + i).to_string());
+        testing::assert_eq(attrs.get(i).value, "x");
+    }
+    testing::assert_eq(testing::expect_ok(element.text(), "formatting content"), "ok");
+    testing::assert_eq(
+        testing::expect_ok(
+            dom::sanitize(input.to_string(), dom::SanitizePolicy::RichText, dom::Limits::standard()),
+            "many-attribute sanitizer",
+        ),
+        "<b>ok</b>",
+    );
+}
+
+#[test]
+fn repeated_scope_scans_and_document_attribute_merges_preserve_content() -> () {
+    let limits = dom::Limits::standard();
+    let document = testing::expect_ok(
+        dom::parse_fragment("<div>".repeat(200) + "</p>".repeat(4000), "div", limits),
+        "repeated missing-scope end tags",
+    );
+    testing::assert_eq(
+        testing::expect_ok(document.select("p"), "recovered empty paragraphs").len(),
+        4000,
+    );
+    let input = text::StringBuilder::new();
+    for pass in 0..2 {
+        input.write_string("<html ");
+        for index in 0..4096 {
+            input.write_string("a" + index.to_string() + "='" + pass.to_string() + "' ");
+        }
+        input.write_string(">");
+    }
+    let document = testing::expect_ok(
+        dom::parse(input.to_string(), limits),
+        "document attribute merge",
+    );
+    let element = testing::expect_some(document.root().first_child(), "html element");
+    testing::assert_eq(element.attributes().len(), 4096);
+    testing::assert_eq(testing::expect_some(element.attribute("a4095"), "retained attribute"), "0");
+}

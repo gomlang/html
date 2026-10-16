@@ -1,0 +1,32 @@
+package dom;
+
+use std::testing;
+
+#[test]
+fn attribute_sort_comparisons_grow_logarithmically() -> () {
+    for power in[10, 12, 14] {
+        let count = 1 << power;
+        let attrs = Vec::new();
+        for index in 0..count {
+            attrs.push(
+                Attribute {
+                    namespace: "",
+                    name: "z" + (100000 + count - index - 1).to_string(),
+                    value: "x",
+                },
+            );
+        }
+        let comparisons = Ref::new(0);
+        sort_attributes_with(
+            attrs,
+            |a, b| {
+                comparisons.set(comparisons.get() + 1);
+                compare_attributes(a, b)
+            },
+        );
+        testing::assert(comparisons.get() <= count * power);
+        for index in 0..count {
+            testing::assert_eq(attrs.get(index).name, "z" + (100000 + index).to_string());
+        }
+    }
+}
