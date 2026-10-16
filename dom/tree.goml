@@ -1,0 +1,288 @@
+package dom;
+
+struct RawNode {
+    inner: Option[Ref[RawData]],
+}
+
+struct RawData {
+    parent: RawNode,
+    first_child: RawNode,
+    last_child: RawNode,
+    prev_sibling: RawNode,
+    next_sibling: RawNode,
+    typ: isize,
+    data: string,
+    namespace: string,
+    attr: Vec[Attribute],
+}
+
+impl PartialEq for RawNode {
+    fn eq(self: RawNode, other: RawNode) -> bool {
+        match (self.inner, other.inner) {
+            (Some(a), Some(b)) => ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+fn nil_node() -> RawNode {
+    RawNode { inner: None }
+}
+
+fn new_node(typ: isize, data: string, namespace: string, attr: Vec[Attribute]) -> RawNode {
+    RawNode {
+        inner: Some(
+            Ref::new(
+                RawData {
+                    parent: nil_node(),
+                    first_child: nil_node(),
+                    last_child: nil_node(),
+                    prev_sibling: nil_node(),
+                    next_sibling: nil_node(),
+                    typ,
+                    data,
+                    namespace,
+                    attr,
+                },
+            ),
+        ),
+    }
+}
+
+fn node_parent(node: RawNode) -> RawNode {
+    match node.inner {
+        Some(value) => value.get().parent,
+        None => nil_node(),
+    }
+}
+
+fn set_node_parent(node: RawNode, parent: RawNode) -> () {
+    if let Some(value) = node.inner {
+        value.set(RawData { parent, ..value.get() });
+    }
+}
+
+fn node_first_child(node: RawNode) -> RawNode {
+    match node.inner {
+        Some(value) => value.get().first_child,
+        None => nil_node(),
+    }
+}
+
+fn set_node_first_child(node: RawNode, first_child: RawNode) -> () {
+    if let Some(value) = node.inner {
+        value.set(RawData { first_child, ..value.get() });
+    }
+}
+
+fn node_last_child(node: RawNode) -> RawNode {
+    match node.inner {
+        Some(value) => value.get().last_child,
+        None => nil_node(),
+    }
+}
+
+fn set_node_last_child(node: RawNode, last_child: RawNode) -> () {
+    if let Some(value) = node.inner {
+        value.set(RawData { last_child, ..value.get() });
+    }
+}
+
+fn node_prev_sibling(node: RawNode) -> RawNode {
+    match node.inner {
+        Some(value) => value.get().prev_sibling,
+        None => nil_node(),
+    }
+}
+
+fn set_node_prev_sibling(node: RawNode, prev_sibling: RawNode) -> () {
+    if let Some(value) = node.inner {
+        value.set(RawData { prev_sibling, ..value.get() });
+    }
+}
+
+fn node_next_sibling(node: RawNode) -> RawNode {
+    match node.inner {
+        Some(value) => value.get().next_sibling,
+        None => nil_node(),
+    }
+}
+
+fn set_node_next_sibling(node: RawNode, next_sibling: RawNode) -> () {
+    if let Some(value) = node.inner {
+        value.set(RawData { next_sibling, ..value.get() });
+    }
+}
+
+fn node_type(node: RawNode) -> isize {
+    match node.inner {
+        Some(value) => value.get().typ,
+        None => 0,
+    }
+}
+
+fn node_data(node: RawNode) -> string {
+    match node.inner {
+        Some(value) => value.get().data,
+        None => "",
+    }
+}
+
+fn set_node_data(node: RawNode, data: string) -> () {
+    if let Some(value) = node.inner {
+        value.set(RawData { data, ..value.get() });
+    }
+}
+
+fn node_namespace(node: RawNode) -> string {
+    match node.inner {
+        Some(value) => value.get().namespace,
+        None => "",
+    }
+}
+
+fn set_node_namespace(node: RawNode, namespace: string) -> () {
+    if let Some(value) = node.inner {
+        value.set(RawData { namespace, ..value.get() });
+    }
+}
+
+fn node_attr(node: RawNode) -> Vec[Attribute] {
+    match node.inner {
+        Some(value) => value.get().attr,
+        None => Vec::new(),
+    }
+}
+
+fn node_insert_before(node: RawNode, child: RawNode, before: RawNode) -> () {
+    let prev = if before != nil_node() {
+        node_prev_sibling(before)
+    } else {
+        node_last_child(node)
+    };
+    if prev != nil_node() {
+        set_node_next_sibling(prev, child);
+    } else {
+        set_node_first_child(node, child);
+    }
+    if before != nil_node() {
+        set_node_prev_sibling(before, child);
+    } else {
+        set_node_last_child(node, child);
+    }
+    set_node_parent(child, node);
+    set_node_prev_sibling(child, prev);
+    set_node_next_sibling(child, before);
+}
+
+fn node_append_child(node: RawNode, child: RawNode) -> () {
+    node_insert_before(node, child, nil_node());
+}
+
+fn node_remove_child(node: RawNode, child: RawNode) -> () {
+    if node_first_child(node) == child {
+        set_node_first_child(node, node_next_sibling(child));
+    }
+    if node_next_sibling(child) != nil_node() {
+        set_node_prev_sibling(node_next_sibling(child), node_prev_sibling(child));
+    }
+    if node_last_child(node) == child {
+        set_node_last_child(node, node_prev_sibling(child));
+    }
+    if node_prev_sibling(child) != nil_node() {
+        set_node_next_sibling(node_prev_sibling(child), node_next_sibling(child));
+    }
+    set_node_parent(child, nil_node());
+    set_node_prev_sibling(child, nil_node());
+    set_node_next_sibling(child, nil_node());
+}
+
+fn reparent_children(dst: RawNode, src: RawNode) -> () {
+    while node_first_child(src) != nil_node() {
+        let child = node_first_child(src);
+        node_remove_child(src, child);
+        node_append_child(dst, child);
+    }
+}
+
+fn node_clone(node: RawNode) -> RawNode {
+    let attrs = Vec::new();
+    for attr in node_attr(node) {
+        attrs.push(attr);
+    }
+    new_node(node_type(node), node_data(node), "", attrs)
+}
+
+fn stack_top(stack: Vec[RawNode]) -> RawNode {
+    if stack.len() == 0 {
+        nil_node()
+    } else {
+        stack.get(stack.len() - 1)
+    }
+}
+
+fn stack_pop(stack: Vec[RawNode]) -> RawNode {
+    let node = stack_top(stack);
+    if stack.len() > 0 {
+        stack.truncate(stack.len() - 1);
+    }
+    node
+}
+
+fn stack_index(stack: Vec[RawNode], node: RawNode) -> isize {
+    let mut i = stack.len() - 1;
+    while i >= 0 {
+        if stack.get(i) == node {
+            return i
+        }
+        i -= 1;
+    }
+    return -1
+}
+
+fn stack_contains(stack: Vec[RawNode], tag: string) -> bool {
+    for node in stack {
+        if node_data(node) == tag && node_namespace(node) == "" {
+            return true
+        }
+    }
+    false
+}
+
+fn stack_remove(stack: Vec[RawNode], node: RawNode) -> () {
+    let i = stack_index(stack, node);
+    if i < 0 {
+        return
+    }
+    for j in i..stack.len() - 1 {
+        stack.set(j, stack.get(j + 1));
+    }
+    stack.truncate(stack.len() - 1);
+}
+
+fn stack_insert(stack: Vec[RawNode], index: isize, node: RawNode) -> () {
+    stack.push(node);
+    let mut i = stack.len() - 1;
+    while i > index {
+        stack.set(i, stack.get(i - 1));
+        i -= 1;
+    }
+    stack.set(index, node);
+}
+
+fn mode_top(stack: Vec[isize]) -> isize {
+    if stack.len() == 0 {
+        -1
+    } else {
+        stack.get(stack.len() - 1)
+    }
+}
+
+fn mode_pop(stack: Vec[isize]) -> isize {
+    let mode = mode_top(stack);
+    if stack.len() > 0 {
+        stack.truncate(stack.len() - 1);
+    }
+    mode
+}

@@ -3,14 +3,8 @@ package main;
 use ecosystem::html;
 use std::testing;
 
-#[go_ffi("html", "UnescapeString")]
-extern fn go_unescape(value: string) -> string;
-
-#[go_ffi("html", "EscapeString")]
-extern fn go_escape(value: string) -> string;
-
 fn check_escape(value: string) -> () {
-    let expected = go_escape(value);
+    let expected = reference_escape(value);
     let escaped = testing::expect_ok(
         html::escape(value, expected.byte_len()),
         "escape differential",
@@ -32,7 +26,7 @@ fn check_escape(value: string) -> () {
 }
 
 fn check_unescape(value: string) -> () {
-    let expected = go_unescape(value);
+    let expected = reference_unescape(value);
     check_unescape_expected(value, expected);
 }
 
@@ -180,7 +174,7 @@ pub fn exercise() -> () {
         let input = "&#" + code.to_string() + ";";
         testing::assert_eq(
             testing::expect_ok(html::unescape(input, 100), "numeric differential"),
-            go_unescape(input),
+            reference_unescape(input),
         );
     }
     for name in[
@@ -195,7 +189,7 @@ pub fn exercise() -> () {
             let input = "&" + name + suffix;
             testing::assert_eq(
                 testing::expect_ok(html::unescape(input, 100), "named differential"),
-                go_unescape(input),
+                reference_unescape(input),
             );
         }
     }

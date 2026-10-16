@@ -2,13 +2,8 @@
 
 Independently versioned HTML utilities. The root `ecosystem::html` package keeps
 its pure GoML escaping and entity APIs. `ecosystem::html::dom` adds HTML5 document
-parsing, CSS selectors and conservative allowlist sanitization through pinned Go
-backends. Contextual template analysis remains the caller's responsibility.
-
-The module now declares a native Go adapter. With the current GoML driver, all
-consuming modules need a module-root `go.mod`, including applications that only
-use entity helpers or depend on HTML through Template/Markdown. See the native
-setup below when upgrading.
+parsing, CSS selectors and conservative allowlist sanitization implemented in
+pure GoML. Contextual template analysis remains the caller's responsibility.
 
 `escape(value, max_bytes)` escapes ampersand, angle brackets and both quotes,
 using numeric quote references. `escape_with(value, options, max_bytes)` selects
@@ -143,8 +138,8 @@ script/style text remains escaped. These methods do not sanitize their output.
 `select` returns matching descendants in document order, excluding the node on
 which it is called; selector groups deduplicate matches. `select_first` stops at
 the first match. `matches` tests the node itself. The supported bounded selector
-subset uses
-[Cascadia](https://github.com/andybalholm/cascadia), including element/ID/class,
+subset preserves the supported
+[Cascadia](https://github.com/andybalholm/cascadia) matching semantics, including element/ID/class,
 attribute operators, combinators, groups, `:not`, `:has`, `:haschild`, nth/first/
 last/only child/type pseudo-classes, `:empty`, `:root`, `:lang`, `:link`, `:input`,
 `:checked`, `:enabled` and `:disabled`. Escapes are supported inside quoted
@@ -182,7 +177,7 @@ across the complete document and may reject a query whose actual evaluation woul
 be cheaper. This bounds admitted structural matching work; it is not a wall-clock
 or instruction-count guarantee.
 
-The HTML backend independently rejects an
+The HTML parser independently rejects an
 open-element stack deeper than 512. Input limits bound admitted source bytes;
 node/depth limits validate the resulting tree and do not cap parser allocations
 or process memory before construction. There is no CPU-time deadline. Node
@@ -190,8 +185,9 @@ handles keep their document alive, share an immutable tree and support concurren
 read operations. They need no explicit close.
 
 `sanitize(input, SanitizePolicy::RichText, limits)` returns HTML for an ordinary
-HTML body/div context. It uses the HTML5 parser, [bluemonday](https://github.com/microcosm-cc/bluemonday),
-then reparses and rechecks until both the allowlist and serialization stabilize.
+HTML body/div context. It uses the HTML5 parser and a GoML implementation of the configured
+[bluemonday](https://github.com/microcosm-cc/bluemonday) allowlist policy, then
+reparses and rechecks until both the allowlist and serialization stabilize.
 It returns `UnstableSanitization` after four unsuccessful passes. Input, tree and
 output budgets apply to intermediate normalization as well, so a large input
 whose final cleaned result would be small may still fail a budget. Failures
@@ -216,45 +212,35 @@ result into those contexts or add untrusted markup after sanitizing. Sanitizer
 regressions cover obfuscated URLs, rawtext, foreign content and mutation patterns;
 they do not establish a guarantee for every browser or future browser behavior.
 
-## Native setup and verification
+## Implementation and verification
 
-DOM support uses `golang.org/x/net` v0.59.0, Cascadia v1.3.5 and bluemonday v1.0.27.
-Dependencies and checksums are pinned in `go.mod`/`go.sum`; no cgo is needed. Go
-1.26 or newer is required. Prepare the native dependencies with `go mod download`
-from this repository before compilation in an environment without cached modules.
+All production code and examples are GoML. Consumers need only their GoML
+manifest; no application `go.mod`, native adapter, FFI declarations, Go module
+download, or runtime fixture access is required.
 
-A consumer supplies its own minimal Go module, for example:
-
-```go
-module example.com/my-html-app
-
-go 1.26.0
-```
-
-GoML resolves the native adapter from the selected GoML dependency and creates
-managed requirements/replacements under the consumer's artifact directory. Do
-not add machine-local `replace` paths to published manifests. Existing root
-entity API signatures and behavior are retained; the additional Go module setup
-is required even when the consumer does not import `dom`.
-
-The explicit GoML declarations in `dom/bindings/bindings.goml` call the Go
-bridge in `native/bindings.go`, backed by `adapter/`. Maintain these signatures
-together; the final Go build checks their compatibility. The public API performs
-explicit Go/GoML conversions.
+The tokenizer, HTML5 tree constructor, foreign-content rules, doctypes and
+serializer preserve the algorithms from `golang.org/x/net/html` v0.59.0. The
+selector implementation preserves the supported Cascadia v1.3.5 semantics. The
+sanitizer implements the configured bluemonday v1.0.27 policy, including URL
+parsing and serialization compatible with Go 1.26. Source attribution and the
+upstream licenses are retained in [LICENSE.dom.txt](LICENSE.dom.txt).
 
 ```sh
-go mod download
 goml fmt --check
 goml test
 (cd ../workflows && just ecosystem-test html)
-go test -race ./adapter
 ```
 
-The `examples/dom/` consumer demonstrates extraction and sanitization. Native
-tests include an independent 18-case html5lib adoption-agency fixture with its
-license/provenance in `adapter/testdata`, fixed tree/render/selector expectations,
-hostile sanitizer vectors and concurrent immutable operations. Existing entity
-tests and the entity-only `examples/basic/` consumer remain in the test suite.
+The `examples/dom/` consumer demonstrates extraction and sanitization. Pure
+GoML tests retain the independent 18-case html5lib adoption-agency fixture with
+its license/provenance in [dom/tests/data](dom/tests/data), fixed tree/render/
+selector expectations, hostile sanitizer vectors and concurrent immutable
+operations. Sanitizer fixed outputs preserve the former adapter regression
+cases and both policies. The entity-only `examples/basic/` consumer uses fixed
+Go 1.26 reference vectors instead of runtime FFI; its numeric parsing differences
+remain explicitly tested. Development-time differential checks compare the
+GoML implementations against the original independent Go implementations;
+the references are not execution dependencies.
 
 ## Development and examples
 

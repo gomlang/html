@@ -1,0 +1,212 @@
+package dom;
+
+use std::text;
+
+struct HtmlParser {
+    tokenizer: Tokenizer,
+    tok: Ref[HtmlToken],
+    has_self_closing_token: Ref[bool],
+    doc: RawNode,
+    oe: Vec[RawNode],
+    afe: Vec[RawNode],
+    head: Ref[RawNode],
+    form: Ref[RawNode],
+    scripting: bool,
+    frameset_ok: Ref[bool],
+    template_stack: Vec[isize],
+    im: Ref[isize],
+    original_im: Ref[isize],
+    foster_parenting: Ref[bool],
+    quirks: Ref[bool],
+    fragment: bool,
+    context: RawNode,
+    failed: Ref[bool],
+}
+
+fn parse_tree(input: string, context: string) -> Result[RawNode, Error] {
+    let doc = new_node(2, context, "", Vec::new());
+    let fragment = context != "";
+    let p = HtmlParser {
+        tokenizer: new_tokenizer(input, context),
+        tok: Ref::new(HtmlToken { typ: 0, data: "", attr: Vec::new() }),
+        has_self_closing_token: Ref::new(false),
+        doc,
+        oe: Vec::new(),
+        afe: Vec::new(),
+        head: Ref::new(nil_node()),
+        form: Ref::new(nil_node()),
+        scripting: true,
+        frameset_ok: Ref::new(!fragment),
+        template_stack: Vec::new(),
+        im: Ref::new(19),
+        original_im: Ref::new(-1),
+        foster_parenting: Ref::new(false),
+        quirks: Ref::new(false),
+        fragment,
+        context: if fragment {
+            new_node(3, context, "", Vec::new())
+        } else {
+            nil_node()
+        },
+        failed: Ref::new(false),
+    };
+    let mut root = nil_node();
+    if fragment {
+        root = new_node(3, "html", "", Vec::new());
+        node_append_child(doc, root);
+        p.oe.push(root);
+        if context == "template" {
+            p.template_stack.push(35);
+        }
+        parser_reset_insertion_mode(p);
+        if context == "form" {
+            p.form.set(p.context);
+        }
+    }
+    loop {
+        let current = stack_top(p.oe);
+        tokenizer_allow_cdata(p.tokenizer, current != nil_node() && node_namespace(current) != "");
+        p.tok.set(tokenizer_next(p.tokenizer));
+        parser_parse_current_token(p);
+        if p.failed.get() {
+            return Err(
+                dom_error(ErrorKind::Parse, "HTML parser open-element stack limit or invalid state"),
+            )
+        }
+        if p.tok.get().typ == 0 {
+            break;
+        }
+    }
+    if fragment {
+        while node_first_child(doc) != nil_node() {
+            node_remove_child(doc, node_first_child(doc));
+        }
+        reparent_children(doc, root);
+    }
+    Ok(doc)
+}
+
+fn valid_context(context: string) -> bool {
+    match context {
+        "a" | "abbr" | "address" | "area" | "article" | "aside" | "audio" | "b" | "base" | "bdi" | "bdo" | "blockquote" | "body" | "br" | "button" | "canvas" | "caption" | "cite" | "code" | "col" | "colgroup" | "data" | "datalist" | "dd" | "del" | "details" | "dfn" | "dialog" | "div" | "dl" | "dt" | "em" | "embed" | "fieldset" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "head" | "header" | "hgroup" | "hr" | "html" | "i" | "iframe" | "img" | "input" | "ins" | "kbd" | "label" | "legend" | "li" | "link" | "main" | "map" | "mark" | "menu" | "meta" | "meter" | "nav" | "noscript" | "object" | "ol" | "optgroup" | "option" | "output" | "p" | "picture" | "pre" | "progress" | "q" | "rp" | "rt" | "ruby" | "s" | "samp" | "script" | "search" | "section" | "select" | "slot" | "small" | "source" | "span" | "strong" | "style" | "sub" | "summary" | "sup" | "table" | "tbody" | "td" | "template" | "textarea" | "tfoot" | "th" | "thead" | "time" | "title" | "tr" | "track" | "u" | "ul" | "var" | "video" | "wbr" => true,
+        _ => false,
+    }
+}
+
+fn scope_stop_tag(namespace: string, tag: string) -> bool {
+    match namespace {
+        "" => match tag {
+            "applet" | "caption" | "html" | "table" | "td" | "th" | "marquee" | "object" | "template" | "select" => true,
+            _ => false,
+        },
+        "math" => match tag {
+            "annotation-xml" | "mi" | "mn" | "mo" | "ms" | "mtext" => true,
+            _ => false,
+        },
+        "svg" => match tag {
+            "desc" | "foreignObject" | "title" => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn node_html_integration_point(node: RawNode) -> bool {
+    html_integration_point(node_namespace(node), node_data(node), node_attr(node))
+}
+
+fn node_mathml_text_integration_point(node: RawNode) -> bool {
+    mathml_text_integration_point(node_namespace(node), node_data(node))
+}
+
+fn parser_doctype(data: string) -> (RawNode, bool) {
+    let (name, attrs, quirks) = parse_html_doctype(data);
+    (new_node(5, name, "", attrs), quirks)
+}
+
+fn only_whitespace(value: string) -> string {
+    let out = text::StringBuilder::new();
+    for ch in value.chars() {
+        if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\u000c' {
+            out.write_string(ch.to_string());
+        }
+    }
+    out.to_string()
+}
+
+fn sort_attributes(attrs: Vec[Attribute]) -> () {
+    sort_attributes_with(attrs, compare_attributes);
+}
+
+fn sort_attributes_with(attrs: Vec[Attribute], compare: (Attribute, Attribute) -> isize) -> () {
+    attrs.stable_sort_by(compare);
+}
+
+fn compare_attributes(a: Attribute, b: Attribute) -> isize {
+    if a.namespace < b.namespace {
+        return -1
+    }
+    if a.namespace > b.namespace {
+        return 1
+    }
+    if a.name < b.name {
+        return -1
+    }
+    if a.name > b.name {
+        return 1
+    }
+    if a.value < b.value {
+        return -1
+    }
+    if a.value > b.value {
+        return 1
+    }
+    0
+}
+
+fn attributes_equal(a: Vec[Attribute], b: Vec[Attribute]) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    for i in 0..a.len() {
+        if a.get(i) != b.get(i) {
+            return false
+        }
+    }
+    true
+}
+
+fn copy_attributes(dst: RawNode, src: HtmlToken) -> () {
+    if src.attr.len() == 0 {
+        return
+    }
+    let attrs = node_attr(dst);
+    let names = HashMap::new();
+    for attr in attrs {
+        names.set(attr.name, true);
+    }
+    for attr in src.attr {
+        if !names.contains(attr.name) {
+            attrs.push(attr);
+            names.set(attr.name, true);
+        }
+    }
+}
+
+fn is_special_element(node: RawNode) -> bool {
+    match node_namespace(node) {
+        "" | "html" => match node_data(node) {
+            "address" | "applet" | "area" | "article" | "aside" | "base" | "basefont" | "bgsound" | "blockquote" | "body" | "br" | "button" | "caption" | "center" | "col" | "colgroup" | "dd" | "details" | "dir" | "div" | "dl" | "dt" | "embed" | "fieldset" | "figcaption" | "figure" | "footer" | "form" | "frame" | "frameset" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "head" | "header" | "hgroup" | "hr" | "html" | "iframe" | "img" | "input" | "keygen" | "li" | "link" | "listing" | "main" | "marquee" | "menu" | "meta" | "nav" | "noembed" | "noframes" | "noscript" | "object" | "ol" | "p" | "param" | "plaintext" | "pre" | "script" | "section" | "select" | "source" | "style" | "summary" | "table" | "tbody" | "td" | "template" | "textarea" | "tfoot" | "th" | "thead" | "title" | "tr" | "track" | "ul" | "wbr" | "xmp" => true,
+            _ => false,
+        },
+        "math" => match node_data(node) {
+            "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml" => true,
+            _ => false,
+        },
+        "svg" => match node_data(node) {
+            "foreignObject" | "desc" | "title" => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}

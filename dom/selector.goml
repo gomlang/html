@@ -1,0 +1,1052 @@
+package dom;
+
+use std::text;
+use std::unicode;
+use std::utf8;
+
+enum CssTerm {
+    Tag(string),
+    Id(string),
+    Class(string),
+    Attribute(string, string, string, bool),
+    Relative(string, Vec[CssSelector]),
+    Nth(isize, isize, bool, bool),
+    Pseudo(string, string),
+}
+
+struct CssSelector {
+    compounds: Vec[Vec[CssTerm]],
+    combinators: Vec[byte],
+}
+
+struct CssParser {
+    source: string,
+    position: Ref[isize],
+}
+
+fn css_error(message: string) -> Error {
+    Error { kind: ErrorKind::Selector, message }
+}
+
+fn css_work_error() -> Error {
+    Error {
+        kind: ErrorKind::SelectorWorkLimit,
+        message: "CSS selector estimated structural work exceeds 10000000 operations",
+    }
+}
+
+fn css_space(value: byte) -> bool {
+    value == b' ' || value == b'\t' || value == b'\r' || value == b'\n' || value == b'\x0c'
+}
+
+fn css_skip_space(source: string, start: isize, admission: bool) -> isize {
+    let mut position = start;
+    while position < source.byte_len() {
+        if css_space(source.byte_get(position)) {
+            position += 1;
+        } else if source.starts_with_at(position, "/*") {
+            match source.byte_slice(position + 2, source.byte_len()).find_bytes("*/") {
+                Some(end) => {
+                    position += end + 4;
+                },
+                None => return if admission {
+                    source.byte_len()
+                } else {
+                    position
+                },
+            }
+        } else {
+            break
+        }
+    }
+    position
+}
+
+fn css_lower_ascii(value: string) -> string {
+    let output = text::StringBuilder::new();
+    for character in value.chars() {
+        if character >= 'A' && character <= 'Z' {
+            output.write_string(
+                char_from_u32(character.to_u32() + 32).unwrap_or(character).to_string(),
+            );
+        } else {
+            output.write_string(character.to_string());
+        }
+    }
+    output.to_string()
+}
+
+fn css_charge_estimate(work: isize, factor: isize) -> Result[isize, Error] {
+    let bound = if factor < 1 {
+        1
+    } else {
+        factor
+    };
+    if work > 10000000 / bound {
+        Err(css_work_error())
+    } else {
+        Ok(work * bound)
+    }
+}
+
+fn css_admit(query: string, stats: TreeStats, single: bool) -> Result[(), Error] {
+    let mut work = query.byte_len() + 1;
+    if !single {
+        work = css_charge_estimate(work, stats.nodes)?;
+    }
+    let mut previous: byte = 0;
+    let mut depth = 0;
+    let mut position = 0;
+    while position < query.byte_len() {
+        let character = query.byte_get(position);
+        if css_space(character) || query.starts_with_at(position, "/*") {
+            let next = css_skip_space(query, position, true);
+            if previous != 0 && previous != b'>' && previous != b'+' && previous != b'~'
+                && previous != b','
+                && previous != b'('
+                && next < query.byte_len() {
+                let following = query.byte_get(next);
+                if following != b'>' && following != b'+' && following != b'~' && following != b','
+                    && following != b')' {
+                    work = css_charge_estimate(work, stats.depth + 1)?;
+                }
+            }
+            position = next;
+            continue
+        }
+        if character == b'\\' {
+            return Err(
+                css_error(
+                    "bounded CSS selectors do not support escapes outside quoted attribute values",
+                ),
+            )
+        }
+        if character == b'\'' || character == b'"' {
+            return Err(
+                css_error(
+                    "bounded CSS selectors require strings to occur inside attribute selectors",
+                ),
+            )
+        }
+        if character == b'[' {
+            if depth >= 32 {
+                return Err(css_error("CSS selector nesting exceeds 32"))
+            }
+            let mut quote: byte = 0;
+            position += 1;
+            while position < query.byte_len() {
+                let current = query.byte_get(position);
+                if quote != 0 {
+                    if current == b'\\' {
+                        position += 1;
+                    } else if current == quote {
+                        quote = 0;
+                    }
+                } else {
+                    if current == b']' {
+                        break
+                    }
+                    if current == b'\\' || current == b'[' || query.starts_with_at(position, "#=") {
+                        return Err(
+                            css_error(
+                                "bounded CSS attribute selectors do not support unquoted escapes, nesting or regular expressions",
+                            ),
+                        )
+                    }
+                    if current == b'\'' || current == b'"' {
+                        quote = current;
+                    }
+                }
+                position += 1;
+            }
+            previous = b']';
+            position += 1;
+            continue
+        }
+        if character == b'(' {
+            depth += 1;
+            if depth > 32 {
+                return Err(css_error("CSS selector nesting exceeds 32"))
+            }
+        } else if character == b')' {
+            depth -= 1;
+        } else if character == b'~' || character == b'+' {
+            work = css_charge_estimate(work, stats.children + 1)?;
+        } else if character == b':' {
+            let start = position + 1;
+            let mut end = start;
+            while end < query.byte_len() {
+                let value = query.byte_get(end);
+                if !(value >= b'a' && value <= b'z') && !(value >= b'A' && value <= b'Z')
+                    && value != b'-' {
+                    break
+                }
+                end += 1;
+            }
+            let name = css_lower_ascii(query.byte_slice(start, end));
+            let mut skip_argument = false;
+            let factor = match name {
+                "not" | "root" | "link" | "input" | "checked" => 1,
+                "has" | "enabled" | "disabled" => stats.nodes,
+                "haschild" | "first-child" | "last-child" | "first-of-type" | "last-of-type" | "only-child" | "only-of-type" | "empty" => stats.children
+                    + 1,
+                "nth-child" | "nth-last-child" | "nth-of-type" | "nth-last-of-type" => {
+                    skip_argument = true;
+                    stats.children + 1
+                },
+                "lang" => {
+                    skip_argument = true;
+                    stats.depth + 1
+                },
+                _ => return Err(
+                    css_error(
+                        "pseudo-class is not supported by bounded CSS selector admission: " + name,
+                    ),
+                ),
+            };
+            work = css_charge_estimate(work, factor)?;
+            if skip_argument {
+                if depth >= 32 {
+                    return Err(css_error("CSS selector nesting exceeds 32"))
+                }
+                let closing = match query.byte_slice(end, query.byte_len()).find_bytes(")") {
+                    Some(value) => value,
+                    None => return Err(
+                        css_error("bounded CSS pseudo-class arguments do not support escapes"),
+                    ),
+                };
+                if query.byte_slice(end, end + closing).contains("\\") {
+                    return Err(
+                        css_error("bounded CSS pseudo-class arguments do not support escapes"),
+                    )
+                }
+                position = end + closing + 1;
+                previous = b')';
+                continue
+            }
+        }
+        previous = character;
+        position += 1;
+    }
+    Ok(())
+}
+
+fn css_name_start(value: byte) -> bool {
+    (value >= b'a' && value <= b'z') || (value >= b'A' && value <= b'Z') || value == b'_'
+        || value > 127
+}
+
+fn css_name_character(value: byte) -> bool {
+    css_name_start(value) || value == b'-' || (value >= b'0' && value <= b'9')
+}
+
+fn css_hex(value: byte) -> isize {
+    if value >= b'0' && value <= b'9' {
+        (value - b'0').to_isize()
+    } else if value >= b'a' && value <= b'f' {
+        (value - b'a').to_isize() + 10
+    } else if value >= b'A' && value <= b'F' {
+        (value - b'A').to_isize() + 10
+    } else {
+        -1
+    }
+}
+
+impl CssParser {
+    fn peek(self: CssParser) -> byte {
+        if self.position.get() < self.source.byte_len() {
+            self.source.byte_get(self.position.get())
+        } else {
+            0
+        }
+    }
+
+    fn advance(self: CssParser) -> () {
+        self.position.set(self.position.get() + 1);
+    }
+
+    fn skip(self: CssParser) -> bool {
+        let before = self.position.get();
+        let after = css_skip_space(self.source, before, false);
+        self.position.set(after);
+        after != before
+    }
+
+    fn expect(self: CssParser, value: byte) -> Result[(), Error] {
+        if self.position.get() >= self.source.byte_len() || self.peek() != value {
+            return Err(css_error("unexpected token in CSS selector"))
+        }
+        self.advance();
+        Ok(())
+    }
+
+    fn name(self: CssParser, identifier: bool) -> Result[string, Error] {
+        let start = self.position.get();
+        if identifier {
+            while self.peek() == b'-' {
+                self.advance();
+            }
+            if !css_name_start(self.peek()) {
+                return Err(css_error("expected CSS identifier"))
+            }
+        }
+        while self.position.get() < self.source.byte_len() && css_name_character(self.peek()) {
+            self.advance();
+        }
+        if self.position.get() == start {
+            return Err(css_error("expected CSS name"))
+        }
+        Ok(self.source.byte_slice(start, self.position.get()))
+    }
+
+    fn quoted(self: CssParser) -> Result[string, Error] {
+        let quote = self.peek();
+        self.advance();
+        let output = text::StringBuilder::new();
+        while self.position.get() < self.source.byte_len() {
+            let current = self.peek();
+            if current == quote {
+                self.advance();
+                return Ok(output.to_string())
+            }
+            if current == b'\r' || current == b'\n' || current == b'\x0c' {
+                return Err(css_error("unexpected end of line in CSS string"))
+            }
+            if current == b'\\' {
+                self.advance();
+                if self.position.get() == self.source.byte_len() {
+                    return Err(css_error("invalid CSS escape sequence"))
+                }
+                let escaped = self.peek();
+                if escaped == b'\r' || escaped == b'\n' || escaped == b'\x0c' {
+                    self.advance();
+                    if escaped == b'\r' && self.peek() == b'\n' {
+                        self.advance();
+                    }
+                } else if css_hex(escaped) >= 0 {
+                    let mut scalar = 0;
+                    let mut count = 0;
+                    while count < 6 && self.position.get() < self.source.byte_len()
+                        && css_hex(self.peek()) >= 0 {
+                        scalar = scalar * 16 + css_hex(self.peek());
+                        count += 1;
+                        self.advance();
+                    }
+                    output.write_string(char_from_u32(scalar.to_u32()).unwrap_or('�').to_string());
+                    let trailing = self.peek();
+                    if css_space(trailing) {
+                        self.advance();
+                        if trailing == b'\r' && self.peek() == b'\n' {
+                            self.advance();
+                        }
+                    }
+                } else {
+                    let start = self.position.get();
+                    let (_, width) = match self.source.decode_at(start) {
+                        Some(value) => value,
+                        None => return Err(css_error("invalid UTF-8 in CSS string")),
+                    };
+                    self.position.set(start + width);
+                    output.write_string(self.source.byte_slice(start, self.position.get()));
+                }
+            } else {
+                let start = self.position.get();
+                while self.position.get() < self.source.byte_len() && self.peek() != quote
+                    && self.peek() != b'\\'
+                    && self.peek() != b'\r'
+                    && self.peek() != b'\n'
+                    && self.peek() != b'\x0c' {
+                    self.advance();
+                }
+                output.write_string(self.source.byte_slice(start, self.position.get()));
+            }
+        }
+        Err(css_error("unexpected EOF in CSS string"))
+    }
+
+    fn attribute(self: CssParser) -> Result[CssTerm, Error] {
+        self.expect(b'[')?;
+        self.skip();
+        let key = css_lower_ascii(self.name(true)?);
+        self.skip();
+        if self.peek() == b']' {
+            self.advance();
+            return Ok(CssTerm::Attribute(key, "", "", false))
+        }
+        let start = self.position.get();
+        let initial = self.peek();
+        self.advance();
+        if initial != b'=' {
+            self.expect(b'=')?;
+        }
+        let operation = self.source.byte_slice(start, self.position.get());
+        if operation != "=" && operation != "!=" && operation != "~=" && operation != "|="
+            && operation != "^="
+            && operation != "$="
+            && operation != "*=" {
+            return Err(css_error("unsupported CSS attribute operator"))
+        }
+        self.skip();
+        let value = if self.peek() == b'\'' || self.peek() == b'"' {
+            self.quoted()?
+        } else {
+            self.name(true)?
+        };
+        self.skip();
+        let insensitive = self.peek() == b'i' || self.peek() == b'I';
+        if insensitive {
+            self.advance();
+        }
+        self.skip();
+        self.expect(b']')?;
+        Ok(CssTerm::Attribute(key, operation, value, insensitive))
+    }
+
+    fn integer(self: CssParser) -> Result[isize, Error] {
+        let mut value: isize = 0;
+        let start = self.position.get();
+        while self.peek() >= b'0' && self.peek() <= b'9' {
+            let digit = (self.peek() - b'0').to_isize();
+            if value > (9223372036854775807 - digit) / 10 {
+                return Err(css_error("CSS nth integer exceeds machine range"))
+            }
+            value = value * 10 + digit;
+            self.advance();
+        }
+        if self.position.get() == start {
+            Err(css_error("expected CSS nth integer"))
+        } else {
+            Ok(value)
+        }
+    }
+
+    fn nth(self: CssParser) -> Result[(isize, isize), Error] {
+        let initial = self.peek();
+        if initial == b'o' || initial == b'O' || initial == b'e' || initial == b'E' {
+            let name = css_lower_ascii(self.name(false)?);
+            return match name {
+                "odd" => Ok((2, 1)),
+                "even" => Ok((2, 0)),
+                _ => Err(css_error("expected odd or even in CSS nth expression")),
+            }
+        }
+        let mut sign = 1;
+        if initial == b'-' || initial == b'+' {
+            if initial == b'-' {
+                sign = -1;
+            }
+            self.advance();
+        }
+        let mut coefficient = sign;
+        if self.peek() != b'n' && self.peek() != b'N' {
+            coefficient = self.integer()? * sign;
+            if self.peek() != b'n' && self.peek() != b'N' {
+                return Ok((0, coefficient))
+            }
+        }
+        self.advance();
+        self.skip();
+        let mut offset = 0;
+        if self.peek() == b'+' || self.peek() == b'-' {
+            let offset_sign = if self.peek() == b'-' {
+                -1
+            } else {
+                1
+            };
+            self.advance();
+            self.skip();
+            offset = self.integer()? * offset_sign;
+        }
+        Ok((coefficient, offset))
+    }
+
+    fn pseudo(self: CssParser, depth: isize) -> Result[CssTerm, Error] {
+        self.expect(b':')?;
+        let name = css_lower_ascii(self.name(true)?);
+        match name {
+            "not" | "has" | "haschild" => {
+                self.expect(b'(')?;
+                self.skip();
+                let group = self.group(depth + 1)?;
+                self.skip();
+                self.expect(b')')?;
+                Ok(CssTerm::Relative(name, group))
+            },
+            "nth-child" | "nth-last-child" | "nth-of-type" | "nth-last-of-type" => {
+                self.expect(b'(')?;
+                self.skip();
+                let (coefficient, offset) = self.nth()?;
+                self.skip();
+                self.expect(b')')?;
+                Ok(
+                    CssTerm::Nth(
+                        coefficient,
+                        offset,
+                        name == "nth-last-child" || name == "nth-last-of-type",
+                        name == "nth-of-type" || name == "nth-last-of-type",
+                    ),
+                )
+            },
+            "first-child" | "last-child" | "first-of-type" | "last-of-type" => {
+                Ok(
+                    CssTerm::Nth(
+                        0,
+                        1,
+                        name == "last-child" || name == "last-of-type",
+                        name == "first-of-type" || name == "last-of-type",
+                    ),
+                )
+            },
+            "lang" => {
+                self.expect(b'(')?;
+                self.skip();
+                let value = unicode::lowercase(self.name(true)?);
+                self.skip();
+                self.expect(b')')?;
+                Ok(CssTerm::Pseudo(name, value))
+            },
+            "only-child" | "only-of-type" | "input" | "empty" | "root" | "link" | "enabled" | "disabled" | "checked" => Ok(
+                CssTerm::Pseudo(name, ""),
+            ),
+            _ => Err(css_error("unsupported CSS pseudo-class: " + name)),
+        }
+    }
+
+    fn compound(self: CssParser, depth: isize) -> Result[Vec[CssTerm], Error] {
+        if self.position.get() >= self.source.byte_len() {
+            return Err(css_error("expected CSS selector"))
+        }
+        let terms = Vec::new();
+        match self.peek() {
+            b'*' => {
+                self.advance();
+                if self.position.get() + 2 < self.source.byte_len()
+                    && self.source.starts_with_at(self.position.get(), "|*") {
+                    self.position.set(self.position.get() + 2);
+                }
+            },
+            b'#' | b'.' | b'[' | b':' => (),
+            _ => terms.push(CssTerm::Tag(css_lower_ascii(self.name(true)?))),
+        }
+        loop {
+            match self.peek() {
+                b'#' => {
+                    self.advance();
+                    terms.push(CssTerm::Id(self.name(false)?));
+                },
+                b'.' => {
+                    self.advance();
+                    terms.push(CssTerm::Class(self.name(true)?));
+                },
+                b'[' => terms.push(self.attribute()?),
+                b':' => terms.push(self.pseudo(depth)?),
+                _ => break,
+            }
+        }
+        Ok(terms)
+    }
+
+    fn selector(self: CssParser, depth: isize) -> Result[CssSelector, Error] {
+        self.skip();
+        let compounds = Vec::new();
+        let combinators = Vec::new();
+        compounds.push(self.compound(depth)?);
+        loop {
+            let separated = self.skip();
+            if self.position.get() == self.source.byte_len() || self.peek() == b','
+                || self.peek() == b')' {
+                break
+            }
+            let current = self.peek();
+            let combinator = if current == b'>' || current == b'+' || current == b'~' {
+                self.advance();
+                self.skip();
+                current
+            } else if separated {
+                b' '
+            } else {
+                break
+            };
+            combinators.push(combinator);
+            compounds.push(self.compound(depth)?);
+        }
+        Ok(CssSelector { compounds, combinators })
+    }
+
+    fn group(self: CssParser, depth: isize) -> Result[Vec[CssSelector], Error] {
+        if depth > 32 {
+            return Err(css_error("CSS selector nesting exceeds 32"))
+        }
+        let group = Vec::new();
+        group.push(self.selector(depth)?);
+        while self.peek() == b',' {
+            self.advance();
+            group.push(self.selector(depth)?);
+        }
+        Ok(group)
+    }
+}
+
+fn css_compile(node: Node, query: string, single: bool) -> Result[Vec[CssSelector], Error] {
+    if node.limits.max_selector_bytes < 0 {
+        return Err(
+            Error { kind: ErrorKind::InvalidLimits, message: "negative selector byte limit" },
+        )
+    }
+    if query.byte_len() > node.limits.max_selector_bytes || query.byte_len() > 4096 {
+        return Err(css_error("CSS selector exceeds byte limit (hard maximum 4096)"))
+    }
+    if utf8::validate(query.to_bytes().as_slice()).is_err() {
+        return Err(css_error("CSS selector is not UTF-8"))
+    }
+    css_admit(query, node.stats, single)?;
+    let parser = CssParser { source: query, position: Ref::new(0) };
+    let group = parser.group(0)?;
+    if parser.position.get() != query.byte_len() {
+        return Err(css_error("unexpected trailing CSS selector input"))
+    }
+    Ok(group)
+}
+
+fn css_spend(work: Ref[isize]) -> Result[(), Error] {
+    if work.get() >= 10000000 {
+        return Err(css_work_error())
+    }
+    work.set(work.get() + 1);
+    Ok(())
+}
+
+fn css_equal(left: string, right: string, insensitive: bool) -> bool {
+    if !insensitive || left == right {
+        return left == right
+    }
+    let mut position = 0;
+    for character in left.chars() {
+        if position >= right.byte_len() {
+            return false
+        }
+        let (other, width) = match right.decode_at(position) {
+            Some(decoded) => decoded,
+            None => return false,
+        };
+        position += width;
+        if character != other {
+            let mut folded = unicode::simple_fold(character);
+            while folded != character && folded != other {
+                folded = unicode::simple_fold(folded);
+            }
+            if folded != other {
+                return false
+            }
+        }
+    }
+    position == right.byte_len()
+}
+
+fn css_includes(value: string, expected: string, insensitive: bool) -> bool {
+    let mut start = 0;
+    while start < value.byte_len() {
+        let mut end = start;
+        while end < value.byte_len() && !css_space(value.byte_get(end)) {
+            end += 1;
+        }
+        if css_equal(value.byte_slice(start, end), expected, insensitive) {
+            return true
+        }
+        start = end + 1;
+    }
+    false
+}
+
+fn css_blank(value: string) -> bool {
+    for character in value.chars() {
+        if !unicode::is_whitespace(character) {
+            return false
+        }
+    }
+    true
+}
+
+fn css_attribute_value(actual: string, operation: string, expected: string, insensitive: bool) -> bool {
+    match operation {
+        "" => true,
+        "=" | "!=" => css_equal(actual, expected, insensitive),
+        "~=" => css_includes(actual, expected, insensitive),
+        "|=" => {
+            css_equal(actual, expected, insensitive)
+                || (actual.byte_len() > expected.byte_len()
+                    && actual.is_char_boundary(expected.byte_len())
+                    && actual.byte_get(expected.byte_len()) == b'-'
+                    && css_equal(actual.byte_slice(0, expected.byte_len()), expected, insensitive))
+        },
+        _ => {
+            if css_blank(actual) {
+                return false
+            }
+            let value = if insensitive {
+                unicode::lowercase(actual)
+            } else {
+                actual
+            };
+            let pattern = if insensitive {
+                unicode::lowercase(expected)
+            } else {
+                expected
+            };
+            match operation {
+                "^=" => value.starts_with(pattern),
+                "$=" => value.ends_with(pattern),
+                "*=" => value.contains(pattern),
+                _ => false,
+            }
+        },
+    }
+}
+
+fn css_attribute(node: Node, key: string, operation: string, expected: string, insensitive: bool) -> bool {
+    if node.kind() != NodeKind::Element {
+        return false
+    }
+    for attribute in node_attr(node.raw) {
+        if attribute.name == key
+            && css_attribute_value(attribute.value, operation, expected, insensitive) {
+            return operation != "!="
+        }
+    }
+    operation == "!="
+}
+
+fn css_next_descendant(node: Node, root: Node) -> Option[Node] {
+    if let Some(child) = node.first_child() {
+        return Some(child)
+    }
+    let mut current = node;
+    loop {
+        if current.same_node(root) {
+            return None
+        }
+        if let Some(sibling) = current.next_sibling() {
+            return Some(sibling)
+        }
+        match current.parent() {
+            Some(parent) => {
+                current = parent;
+            },
+            None => return None,
+        }
+    }
+}
+
+fn css_nth(
+    node: Node,
+    coefficient: isize,
+    offset: isize,
+    last: bool,
+    of_type: bool,
+    work: Ref[isize],
+) -> Result[bool, Error] {
+    if node.kind() != NodeKind::Element {
+        return Ok(false)
+    }
+    let parent = match node.parent() {
+        Some(value) => value,
+        None => return Ok(false),
+    };
+    let mut position = 0;
+    let mut count = 0;
+    let mut current = parent.first_child();
+    while let Some(child) = current {
+        css_spend(work)?;
+        if child.kind() == NodeKind::Element && (!of_type || child.name() == node.name()) {
+            count += 1;
+            if child.same_node(node) {
+                position = count;
+                if !last {
+                    break
+                }
+            }
+        }
+        current = child.next_sibling();
+    }
+    if position == 0 {
+        return Ok(false)
+    }
+    if last {
+        position = count - position + 1;
+    }
+    if coefficient == 0 {
+        return Ok(position == offset)
+    }
+    if offset < 0 && position > 9223372036854775807 + offset {
+        return Ok(false)
+    }
+    let difference = position - offset;
+    Ok(difference % coefficient == 0 && difference / coefficient >= 0)
+}
+
+fn css_disabled_fieldset(node: Node, work: Ref[isize]) -> Result[bool, Error] {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        css_spend(work)?;
+        if parent.name() == "fieldset" && css_attribute(parent, "disabled", "", "", false) {
+            if current.name() != "legend" {
+                return Ok(true)
+            }
+            let mut sibling = parent.first_child();
+            while let Some(previous) = sibling {
+                css_spend(work)?;
+                if previous.same_node(current) {
+                    break
+                }
+                if previous.name() == "legend" {
+                    return Ok(true)
+                }
+                sibling = previous.next_sibling();
+            }
+        }
+        current = parent;
+    }
+    Ok(false)
+}
+
+fn css_pseudo(node: Node, name: string, value: string, work: Ref[isize]) -> Result[bool, Error] {
+    if name == "lang" {
+        let mut current: Option[Node] = Some(node);
+        while let Some(ancestor) = current {
+            css_spend(work)?;
+            if css_attribute(ancestor, "lang", "|=", value, false) {
+                return Ok(true)
+            }
+            current = ancestor.parent();
+        }
+        return Ok(false)
+    }
+    if node.kind() != NodeKind::Element {
+        return Ok(false)
+    }
+    let tag = node.name();
+    match name {
+        "root" => Ok(
+            match node.parent() {
+                Some(parent) => parent.kind() == NodeKind::Document,
+                None => false,
+            },
+        ),
+        "input" => Ok(tag == "input" || tag == "select" || tag == "textarea" || tag == "button"),
+        "link" => Ok(
+            (tag == "a" || tag == "area" || tag == "link")
+                && css_attribute(node, "href", "", "", false),
+        ),
+        "empty" => {
+            let mut current = node.first_child();
+            while let Some(child) = current {
+                css_spend(work)?;
+                if child.kind() == NodeKind::Element
+                    || (child.kind() == NodeKind::Text && !css_blank(child.value())) {
+                    return Ok(false)
+                }
+                current = child.next_sibling();
+            }
+            Ok(true)
+        },
+        "only-child" | "only-of-type" => {
+            let parent = match node.parent() {
+                Some(value) => value,
+                None => return Ok(false),
+            };
+            let mut count = 0;
+            let mut current = parent.first_child();
+            while let Some(child) = current {
+                css_spend(work)?;
+                if child.kind() == NodeKind::Element
+                    && (name == "only-child" || child.name() == tag) {
+                    count += 1;
+                    if count > 1 {
+                        return Ok(false)
+                    }
+                }
+                current = child.next_sibling();
+            }
+            Ok(count == 1)
+        },
+        "enabled" | "disabled" => {
+            let enabled = name == "enabled";
+            if tag == "a" || tag == "area" || tag == "link" {
+                return Ok(enabled && css_attribute(node, "href", "", "", false))
+            }
+            if tag == "optgroup" || tag == "menuitem" || tag == "fieldset" {
+                return Ok(css_attribute(node, "disabled", "", "", false) != enabled)
+            }
+            if tag == "button" || tag == "input" || tag == "select" || tag == "textarea"
+                || tag == "option" {
+                let disabled = css_attribute(node, "disabled", "", "", false)
+                    || css_disabled_fieldset(node, work)?;
+                return Ok(disabled != enabled)
+            }
+            Ok(false)
+        },
+        "checked" => {
+            if tag == "option" {
+                return Ok(css_attribute(node, "selected", "", "", false))
+            }
+            if (tag == "input" || tag == "menuitem")
+                && css_attribute(node, "checked", "", "", false) {
+                for attribute in node_attr(node.raw) {
+                    if attribute.name == "type" {
+                        let kind = css_lower_ascii(attribute.value);
+                        if kind == "checkbox" || kind == "radio" {
+                            return Ok(true)
+                        }
+                    }
+                }
+            }
+            Ok(false)
+        },
+        _ => Ok(false),
+    }
+}
+
+fn css_term(node: Node, term: CssTerm, work: Ref[isize]) -> Result[bool, Error] {
+    css_spend(work)?;
+    match term {
+        CssTerm::Tag(name) => Ok(node.kind() == NodeKind::Element && node.name() == name),
+        CssTerm::Id(value) => Ok(css_attribute(node, "id", "=", value, false)),
+        CssTerm::Class(value) => Ok(css_attribute(node, "class", "~=", value, false)),
+        CssTerm::Attribute(key, operation, value, insensitive) => Ok(
+            css_attribute(node, key, operation, value, insensitive),
+        ),
+        CssTerm::Nth(coefficient, offset, last, of_type) => css_nth(
+            node,
+            coefficient,
+            offset,
+            last,
+            of_type,
+            work,
+        ),
+        CssTerm::Pseudo(name, value) => css_pseudo(node, name, value, work),
+        CssTerm::Relative(name, group) => {
+            if node.kind() != NodeKind::Element {
+                return Ok(false)
+            }
+            if name == "not" {
+                return Ok(!css_group_match(node, group, work)?)
+            }
+            let mut current = node.first_child();
+            while let Some(child) = current {
+                css_spend(work)?;
+                if css_group_match(child, group, work)? {
+                    return Ok(true)
+                }
+                current = if name == "haschild" {
+                    child.next_sibling()
+                } else {
+                    css_next_descendant(child, node)
+                };
+            }
+            Ok(false)
+        },
+    }
+}
+
+fn css_selector_match(node: Node, selector: CssSelector, index: isize, work: Ref[isize]) -> Result[
+    bool,
+    Error,
+] {
+    css_spend(work)?;
+    let terms = selector.compounds.get(index);
+    if terms.len() == 0 && node.kind() != NodeKind::Element {
+        return Ok(false)
+    }
+    for term in terms {
+        if !css_term(node, term, work)? {
+            return Ok(false)
+        }
+    }
+    if index == 0 {
+        return Ok(true)
+    }
+    let combinator = selector.combinators.get(index - 1);
+    let parent = match node.parent() {
+        Some(value) => value,
+        None => return Ok(false),
+    };
+    if combinator == b'>' {
+        return css_selector_match(parent, selector, index - 1, work)
+    }
+    if combinator == b' ' {
+        let mut current: Option[Node] = Some(parent);
+        while let Some(ancestor) = current {
+            css_spend(work)?;
+            if css_selector_match(ancestor, selector, index - 1, work)? {
+                return Ok(true)
+            }
+            current = ancestor.parent();
+        }
+        return Ok(false)
+    }
+    let mut current = parent.first_child();
+    let mut previous: Option[Node] = None;
+    while let Some(sibling) = current {
+        css_spend(work)?;
+        if sibling.same_node(node) {
+            break
+        }
+        if combinator == b'~' {
+            if css_selector_match(sibling, selector, index - 1, work)? {
+                return Ok(true)
+            }
+        } else if sibling.kind() != NodeKind::Text && sibling.kind() != NodeKind::Comment {
+            previous = Some(sibling);
+        }
+        current = sibling.next_sibling();
+    }
+    match previous {
+        Some(sibling) => css_selector_match(sibling, selector, index - 1, work),
+        None => Ok(false),
+    }
+}
+
+fn css_group_match(node: Node, group: Vec[CssSelector], work: Ref[isize]) -> Result[bool, Error] {
+    for selector in group {
+        if css_selector_match(node, selector, selector.compounds.len() - 1, work)? {
+            return Ok(true)
+        }
+    }
+    Ok(false)
+}
+
+fn matches_node(node: Node, selector: string) -> Result[bool, Error] {
+    let group = css_compile(node, selector, true)?;
+    css_group_match(node, group, Ref::new(0))
+}
+
+fn select_nodes(node: Node, selector: string, first: bool) -> Result[Vec[Node], Error] {
+    if node.limits.max_matches < 0 {
+        return Err(
+            Error { kind: ErrorKind::InvalidLimits, message: "negative selector match limit" },
+        )
+    }
+    let group = css_compile(node, selector, false)?;
+    let work = Ref::new(0);
+    let result = Vec::new();
+    let mut current = node.first_child();
+    while let Some(child) = current {
+        css_spend(work)?;
+        if css_group_match(child, group, work)? {
+            if result.len() == node.limits.max_matches {
+                return Err(
+                    Error {
+                        kind: ErrorKind::MatchLimit,
+                        message: "CSS selector match limit exceeded",
+                    },
+                )
+            }
+            result.push(child);
+            if first {
+                break
+            }
+        }
+        current = css_next_descendant(child, node);
+    }
+    Ok(result)
+}

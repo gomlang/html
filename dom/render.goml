@@ -1,0 +1,248 @@
+package dom;
+
+use std::text;
+
+struct HtmlWriter {
+    output: text::StringBuilder,
+    limit: isize,
+}
+
+fn html_write(writer: HtmlWriter, value: string) -> Result[(), Error] {
+    if value.byte_len() > writer.limit - writer.output.len() {
+        return Err(dom_error(ErrorKind::OutputLimit, "HTML output byte limit exceeded"))
+    }
+    writer.output.write_string(value);
+    Ok(())
+}
+
+fn html_escape(writer: HtmlWriter, value: string) -> Result[(), Error] {
+    let mut start = 0;
+    for i in 0..value.byte_len() {
+        let escaped = match value.byte_get(i) {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'\'' => "&#39;",
+            b'"' => "&#34;",
+            b'\r' => "&#13;",
+            _ => "",
+        };
+        if escaped != "" {
+            html_write(writer, value.byte_slice(start, i))?;
+            html_write(writer, escaped)?;
+            start = i + 1;
+        }
+    }
+    html_write(writer, value.byte_slice(start, value.byte_len()))
+}
+
+fn html_comment(writer: HtmlWriter, value: string) -> Result[(), Error] {
+    let mut start = 0;
+    for i in 0..value.byte_len() {
+        let ch = value.byte_get(i);
+        let escaped = if ch == b'&' {
+            "&amp;"
+        } else if ch == b'>'
+            && (i == 0 || value.byte_get(i - 1) == b'!' || value.byte_get(i - 1) == b'-') {
+            "&gt;"
+        } else {
+            ""
+        };
+        if escaped != "" {
+            html_write(writer, value.byte_slice(start, i))?;
+            html_write(writer, escaped)?;
+            start = i + 1;
+        }
+    }
+    html_write(writer, value.byte_slice(start, value.byte_len()))
+}
+
+fn html_doctype_quoted(writer: HtmlWriter, value: string) -> Result[(), Error] {
+    let quote = if value.contains("\"") {
+        "'"
+    } else {
+        "\""
+    };
+    if quote == "'" && value.contains("'") {
+        return Err(dom_error(ErrorKind::Parse, "doctype contains both quote types"))
+    }
+    html_write(writer, quote)?;
+    for ch in value.chars() {
+        html_write(
+            writer,
+            if ch == '>' {
+                "&gt;"
+            } else {
+                ch.to_string()
+            },
+        )?;
+    }
+    html_write(writer, quote)
+}
+
+fn raw_text_element(name: string) -> bool {
+    match name {
+        "iframe" | "noembed" | "noframes" | "noscript" | "plaintext" | "script" | "style" | "xmp" => true,
+        _ => false,
+    }
+}
+
+fn void_element(name: string) -> bool {
+    match name {
+        "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" | "keygen" | "link" | "meta" | "param" | "source" | "track" | "wbr" => true,
+        _ => false,
+    }
+}
+
+fn literal_children(node: RawNode) -> bool {
+    if node_namespace(node) != "" || !raw_text_element(node_data(node)) {
+        return false
+    }
+    let mut parent = node_parent(node);
+    while parent != nil_node() {
+        if node_namespace(parent) != "" {
+            return node_html_integration_point(parent)
+        }
+        parent = node_parent(parent);
+    }
+    true
+}
+
+fn render_children(writer: HtmlWriter, node: RawNode, literal: bool) -> Result[bool, Error] {
+    let mut child = node_first_child(node);
+    while child != nil_node() {
+        if literal && node_type(child) == 1 {
+            html_write(writer, node_data(child))?;
+        } else if !render_node(writer, child)? {
+            return Ok(false)
+        }
+        child = node_next_sibling(child);
+    }
+    Ok(true)
+}
+
+fn render_opening(writer: HtmlWriter, name: string, attrs: Vec[Attribute], close: bool) -> Result[
+    (),
+    Error,
+] {
+    html_write(writer, "<")?;
+    html_write(writer, name)?;
+    for attr in attrs {
+        html_write(writer, " ")?;
+        if attr.namespace != "" {
+            html_write(writer, attr.namespace)?;
+            html_write(writer, ":")?;
+        }
+        html_write(writer, attr.name)?;
+        html_write(writer, "=\"")?;
+        html_escape(writer, attr.value)?;
+        html_write(writer, "\"")?;
+    }
+    html_write(
+        writer,
+        if close {
+            "/>"
+        } else {
+            ">"
+        },
+    )
+}
+
+fn render_node(writer: HtmlWriter, node: RawNode) -> Result[bool, Error] {
+    let name = node_data(node);
+    match node_type(node) {
+        1 => {
+            html_escape(writer, name)?;
+            return Ok(true)
+        },
+        2 => return render_children(writer, node, literal_children(node)),
+        4 => {
+            html_write(writer, "<!--")?;
+            html_comment(writer, name)?;
+            html_write(writer, "-->")?;
+            return Ok(true)
+        },
+        5 => {
+            html_write(writer, "<!DOCTYPE ")?;
+            html_escape(writer, name)?;
+            let mut public = "";
+            let mut system = "";
+            for attr in node_attr(node) {
+                if attr.name == "public" {
+                    public = attr.value;
+                }
+                if attr.name == "system" {
+                    system = attr.value;
+                }
+            }
+            if public != "" {
+                html_write(writer, " PUBLIC ")?;
+                html_doctype_quoted(writer, public)?;
+                if system != "" {
+                    html_write(writer, " ")?;
+                    html_doctype_quoted(writer, system)?;
+                }
+            } else if system != "" {
+                html_write(writer, " SYSTEM ")?;
+                html_doctype_quoted(writer, system)?;
+            }
+            html_write(writer, ">")?;
+            return Ok(true)
+        },
+        3 => {},
+        _ => return Err(dom_error(ErrorKind::Parse, "unknown HTML node type")),
+    }
+    let empty = void_element(name);
+    if empty && node_first_child(node) != nil_node() {
+        return Err(dom_error(ErrorKind::Parse, "HTML void element has children"))
+    }
+    render_opening(writer, name, node_attr(node), empty)?;
+    if empty {
+        return Ok(true)
+    }
+    let child = node_first_child(node);
+    if child != nil_node() && node_type(child) == 1 && node_data(child).starts_with("\n")
+        && (name == "pre" || name == "listing" || name == "textarea") {
+        html_write(writer, "\n")?;
+    }
+    let literal = literal_children(node);
+    if !render_children(writer, node, literal)? || (literal && name == "plaintext") {
+        return Ok(false)
+    }
+    html_write(writer, "</")?;
+    html_write(writer, name)?;
+    html_write(writer, ">")?;
+    Ok(true)
+}
+
+fn render_tree(node: RawNode, inner: bool, limit: isize) -> Result[string, Error] {
+    let writer = HtmlWriter { output: text::StringBuilder::new(), limit };
+    if inner {
+        render_children(writer, node, literal_children(node))?;
+    } else {
+        render_node(writer, node)?;
+    }
+    Ok(writer.output.to_string())
+}
+
+fn extract_text(root: RawNode, limit: isize) -> Result[string, Error] {
+    let writer = HtmlWriter { output: text::StringBuilder::new(), limit };
+    let mut node = root;
+    loop {
+        if node_type(node) == 1 {
+            html_write(writer, node_data(node))?;
+        }
+        if node_first_child(node) != nil_node() {
+            node = node_first_child(node);
+            continue;
+        }
+        while node != root && node_next_sibling(node) == nil_node() {
+            node = node_parent(node);
+        }
+        if node == root {
+            break;
+        }
+        node = node_next_sibling(node);
+    }
+    Ok(writer.output.to_string())
+}

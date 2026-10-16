@@ -1,5 +1,2 @@
 [module]
 path = "ecosystem::html"
-
-[native]
-go-module = "example.com/goml-ecosystem/html"

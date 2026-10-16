@@ -1,0 +1,145 @@
+package dom;
+
+use std::text;
+
+fn sanitize_allowed(name: string) -> bool {
+    match name {
+        "p" | "br" | "hr" | "b" | "strong" | "i" | "em" | "s" | "del" | "u" | "sub" | "sup" | "blockquote" | "pre" | "code" | "ul" | "ol" | "li" | "dl" | "dt" | "dd" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "th" | "td" | "caption" | "a" | "span" | "div" => true,
+        _ => false,
+    }
+}
+
+fn sanitize_skip_content(name: string) -> bool {
+    match name {
+        "script" | "style" | "iframe" | "object" | "embed" | "svg" | "math" | "template" | "noscript" | "noembed" | "noframes" | "xmp" | "plaintext" | "frame" | "frameset" | "nostyle" | "title" => true,
+        _ => false,
+    }
+}
+
+fn sanitize_attributes(token: HtmlToken) -> Vec[Attribute] {
+    let result = Vec::new();
+    let mut href = false;
+    for attr in token.attr {
+        if attr.name == "title" && attr.namespace == "" {
+            result.push(attr);
+        }
+        if token.data == "a" && attr.name == "href" && attr.namespace == "" {
+            if let Some(value) = sanitize_url(attr.value) {
+                result.push(Attribute { namespace: "", name: "href", value });
+                href = true;
+            }
+        }
+    }
+    if href {
+        result.push(Attribute { namespace: "", name: "rel", value: "nofollow noreferrer" });
+    }
+    result
+}
+
+fn sanitize_pass(input: string, rich: bool, limit: isize) -> Result[string, Error] {
+    let tokenizer = new_tokenizer(input, "");
+    let writer = HtmlWriter { output: text::StringBuilder::new(), limit };
+    let mut skip = false;
+    let mut skipped = 0;
+    let mut recent = "";
+    let closing_tags = Vec::new();
+    loop {
+        let token = tokenizer_next(tokenizer);
+        if token.typ == 0 {
+            break;
+        }
+        match token.typ {
+            2 => {
+                recent = token.data;
+                if recent == "script" || recent == "style" {
+                    continue;
+                }
+                if !rich || !sanitize_allowed(token.data) {
+                    if sanitize_skip_content(token.data) {
+                        skip = true;
+                        skipped += 1;
+                    }
+                    continue;
+                }
+                let attrs = sanitize_attributes(token);
+                if token.data == "a" && attrs.len() == 0 {
+                    closing_tags.push(token.data);
+                    continue;
+                }
+                if !skip {
+                    render_opening(writer, token.data, attrs, false)?;
+                }
+            },
+            3 => {
+                if recent == token.data {
+                    recent = "";
+                }
+                if token.data == "script" || token.data == "style" {
+                    continue;
+                }
+                if closing_tags.len() > 0 && closing_tags.get(closing_tags.len() - 1) == token.data {
+                    closing_tags.truncate(closing_tags.len() - 1);
+                    continue;
+                }
+                if !rich || !sanitize_allowed(token.data) {
+                    if sanitize_skip_content(token.data) {
+                        skipped -= 1;
+                        if skipped == 0 {
+                            skip = false;
+                        }
+                    }
+                    continue;
+                }
+                if !skip {
+                    html_write(writer, "</")?;
+                    html_write(writer, token.data)?;
+                    html_write(writer, ">")?;
+                }
+            },
+            4 => {
+                if !skip && rich && sanitize_allowed(token.data) {
+                    let attrs = sanitize_attributes(token);
+                    if token.data != "a" || attrs.len() > 0 {
+                        render_opening(writer, token.data, attrs, true)?;
+                    }
+                }
+            },
+            1 => {
+                if !skip && recent != "script" && recent != "style" {
+                    html_escape(writer, token.data)?;
+                }
+            },
+            _ => {},
+        }
+    }
+    Ok(writer.output.to_string())
+}
+
+pub fn sanitize(input: string, policy: SanitizePolicy, limits: Limits) -> Result[string, Error] {
+    limits.validate()?;
+    let original = parse_fragment(input, "div", limits)?;
+    let mut normalized = original.root().inner_html()?;
+    for _ in 0..4 {
+        let clean = sanitize_pass(
+            normalized,
+            policy == SanitizePolicy::RichText,
+            limits.max_output_bytes,
+        )?;
+        let parsed = parse_fragment(
+            clean,
+            "div",
+            Limits { max_input_bytes: limits.max_output_bytes, ..limits },
+        )?;
+        let canonical = parsed.root().inner_html()?;
+        if canonical == normalized && canonical == clean {
+            return Ok(canonical)
+        }
+        normalized = canonical;
+    }
+    Err(
+        dom_error(
+            ErrorKind::UnstableSanitization,
+            "HTML sanitization did not stabilize after four passes",
+        ),
+    )
+}

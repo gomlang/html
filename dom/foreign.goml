@@ -1,0 +1,339 @@
+package dom;
+
+use std::text;
+use std::unicode;
+
+fn adjust_svg_tag_name(name: string) -> string {
+    match name {
+        "altglyph" => "altGlyph",
+        "altglyphdef" => "altGlyphDef",
+        "altglyphitem" => "altGlyphItem",
+        "animatecolor" => "animateColor",
+        "animatemotion" => "animateMotion",
+        "animatetransform" => "animateTransform",
+        "clippath" => "clipPath",
+        "feblend" => "feBlend",
+        "fecolormatrix" => "feColorMatrix",
+        "fecomponenttransfer" => "feComponentTransfer",
+        "fecomposite" => "feComposite",
+        "feconvolvematrix" => "feConvolveMatrix",
+        "fediffuselighting" => "feDiffuseLighting",
+        "fedisplacementmap" => "feDisplacementMap",
+        "fedistantlight" => "feDistantLight",
+        "feflood" => "feFlood",
+        "fefunca" => "feFuncA",
+        "fefuncb" => "feFuncB",
+        "fefuncg" => "feFuncG",
+        "fefuncr" => "feFuncR",
+        "fegaussianblur" => "feGaussianBlur",
+        "feimage" => "feImage",
+        "femerge" => "feMerge",
+        "femergenode" => "feMergeNode",
+        "femorphology" => "feMorphology",
+        "feoffset" => "feOffset",
+        "fepointlight" => "fePointLight",
+        "fespecularlighting" => "feSpecularLighting",
+        "fespotlight" => "feSpotLight",
+        "fetile" => "feTile",
+        "feturbulence" => "feTurbulence",
+        "foreignobject" => "foreignObject",
+        "glyphref" => "glyphRef",
+        "lineargradient" => "linearGradient",
+        "radialgradient" => "radialGradient",
+        "textpath" => "textPath",
+        _ => name,
+    }
+}
+
+fn foreign_svg_attribute_name(name: string) -> string {
+    match name {
+        "attributename" => "attributeName",
+        "attributetype" => "attributeType",
+        "basefrequency" => "baseFrequency",
+        "baseprofile" => "baseProfile",
+        "calcmode" => "calcMode",
+        "clippathunits" => "clipPathUnits",
+        "diffuseconstant" => "diffuseConstant",
+        "edgemode" => "edgeMode",
+        "filterunits" => "filterUnits",
+        "glyphref" => "glyphRef",
+        "gradienttransform" => "gradientTransform",
+        "gradientunits" => "gradientUnits",
+        "kernelmatrix" => "kernelMatrix",
+        "kernelunitlength" => "kernelUnitLength",
+        "keypoints" => "keyPoints",
+        "keysplines" => "keySplines",
+        "keytimes" => "keyTimes",
+        "lengthadjust" => "lengthAdjust",
+        "limitingconeangle" => "limitingConeAngle",
+        "markerheight" => "markerHeight",
+        "markerunits" => "markerUnits",
+        "markerwidth" => "markerWidth",
+        "maskcontentunits" => "maskContentUnits",
+        "maskunits" => "maskUnits",
+        "numoctaves" => "numOctaves",
+        "pathlength" => "pathLength",
+        "patterncontentunits" => "patternContentUnits",
+        "patterntransform" => "patternTransform",
+        "patternunits" => "patternUnits",
+        "pointsatx" => "pointsAtX",
+        "pointsaty" => "pointsAtY",
+        "pointsatz" => "pointsAtZ",
+        "preservealpha" => "preserveAlpha",
+        "preserveaspectratio" => "preserveAspectRatio",
+        "primitiveunits" => "primitiveUnits",
+        "refx" => "refX",
+        "refy" => "refY",
+        "repeatcount" => "repeatCount",
+        "repeatdur" => "repeatDur",
+        "requiredextensions" => "requiredExtensions",
+        "requiredfeatures" => "requiredFeatures",
+        "specularconstant" => "specularConstant",
+        "specularexponent" => "specularExponent",
+        "spreadmethod" => "spreadMethod",
+        "startoffset" => "startOffset",
+        "stddeviation" => "stdDeviation",
+        "stitchtiles" => "stitchTiles",
+        "surfacescale" => "surfaceScale",
+        "systemlanguage" => "systemLanguage",
+        "tablevalues" => "tableValues",
+        "targetx" => "targetX",
+        "targety" => "targetY",
+        "textlength" => "textLength",
+        "viewbox" => "viewBox",
+        "viewtarget" => "viewTarget",
+        "xchannelselector" => "xChannelSelector",
+        "ychannelselector" => "yChannelSelector",
+        "zoomandpan" => "zoomAndPan",
+        _ => name,
+    }
+}
+
+fn foreign_mathml_attribute_name(name: string) -> string {
+    match name {
+        "definitionurl" => "definitionURL",
+        _ => name,
+    }
+}
+
+fn foreign_breakout(name: string) -> bool {
+    match name {
+        "b" | "big" | "blockquote" | "body" | "br" | "center" | "code" | "dd" | "div" | "dl" | "dt" | "em" | "embed" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "head" | "hr" | "i" | "img" | "li" | "listing" | "menu" | "meta" | "nobr" | "ol" | "p" | "pre" | "ruby" | "s" | "small" | "span" | "strong" | "strike" | "sub" | "sup" | "table" | "tt" | "u" | "ul" | "var" => true,
+        _ => false,
+    }
+}
+
+fn adjust_foreign_attributes(attributes: Vec[Attribute]) -> () {
+    for index in 0..attributes.len() {
+        let attribute = attributes.get(index);
+        let adjusted = match attribute.name {
+            "xlink:actuate" | "xlink:arcrole" | "xlink:href" | "xlink:role" | "xlink:show" | "xlink:title" | "xlink:type" | "xml:lang" | "xml:space" | "xmlns:xlink" => true,
+            _ => false,
+        };
+        if adjusted {
+            let mut colon = 0;
+            while colon < attribute.name.byte_len() && attribute.name.byte_get(colon) != b':' {
+                colon += 1;
+            }
+            attributes.set(
+                index,
+                Attribute {
+                    namespace: attribute.name.byte_slice(0, colon),
+                    name: attribute.name.byte_slice(colon + 1, attribute.name.byte_len()),
+                    value: attribute.value,
+                },
+            );
+        }
+    }
+}
+
+fn adjust_svg_attributes(attributes: Vec[Attribute]) -> () {
+    for index in 0..attributes.len() {
+        let attribute = attributes.get(index);
+        attributes.set(
+            index,
+            Attribute {
+                namespace: attribute.namespace,
+                name: foreign_svg_attribute_name(attribute.name),
+                value: attribute.value,
+            },
+        );
+    }
+}
+
+fn adjust_mathml_attributes(attributes: Vec[Attribute]) -> () {
+    for index in 0..attributes.len() {
+        let attribute = attributes.get(index);
+        attributes.set(
+            index,
+            Attribute {
+                namespace: attribute.namespace,
+                name: foreign_mathml_attribute_name(attribute.name),
+                value: attribute.value,
+            },
+        );
+    }
+}
+
+fn html_integration_point(namespace: string, name: string, attributes: Vec[Attribute]) -> bool {
+    if namespace == "math" && name == "annotation-xml" {
+        for attribute in attributes {
+            if attribute.name == "encoding"
+                && (text::equal_fold(attribute.value, "text/html")
+                    || text::equal_fold(attribute.value, "application/xhtml+xml")) {
+                return true
+            }
+        }
+    }
+    namespace == "svg" && (name == "desc" || name == "foreignObject" || name == "title")
+}
+
+fn mathml_text_integration_point(namespace: string, name: string) -> bool {
+    namespace == "math"
+        && (name == "mi" || name == "mo" || name == "mn" || name == "ms" || name == "mtext")
+}
+
+fn foreign_trim_start(value: string) -> string {
+    let mut index = 0;
+    while index < value.byte_len() && tokenizer_space(value.byte_get(index)) {
+        index += 1;
+    }
+    value.byte_slice(index, value.byte_len())
+}
+
+fn parse_html_doctype(input: string) -> (string, Vec[Attribute], bool) {
+    let mut space = 0;
+    while space < input.byte_len() && !tokenizer_space(input.byte_get(space)) {
+        space += 1;
+    }
+    let raw_name = input.byte_slice(0, space);
+    let name = unicode::lowercase(raw_name);
+    let mut quirks = raw_name != "html";
+    let mut rest = foreign_trim_start(input.byte_slice(space, input.byte_len()));
+    let attributes = Vec::new();
+    if rest.byte_len() < 6 {
+        return (name, attributes, quirks || rest != "")
+    }
+    let mut key = unicode::lowercase(rest.byte_slice(0, 6));
+    rest = rest.byte_slice(6, rest.byte_len());
+    while key == "public" || key == "system" {
+        rest = foreign_trim_start(rest);
+        if rest == "" {
+            break
+        }
+        let quote = rest.byte_get(0);
+        if quote != b'"' && quote != b'\'' {
+            break
+        }
+        rest = rest.byte_slice(1, rest.byte_len());
+        let mut end = 0;
+        while end < rest.byte_len() && rest.byte_get(end) != quote {
+            end += 1;
+        }
+        let id = rest.byte_slice(0, end);
+        rest = if end == rest.byte_len() {
+            ""
+        } else {
+            rest.byte_slice(end + 1, rest.byte_len())
+        };
+        attributes.push(Attribute { namespace: "", name: key, value: id });
+        key = if key == "public" {
+            "system"
+        } else {
+            ""
+        };
+    }
+    if key != "" || rest != "" {
+        quirks = true;
+    } else if attributes.len() > 0 {
+        let first = attributes.get(0);
+        if first.name == "public" {
+            let public = unicode::lowercase(first.value);
+            if public == "-//w3o//dtd w3 html strict 3.0//en//"
+                || public == "-/w3d/dtd html 4.0 transitional/en"
+                || public == "html"
+                || foreign_quirky_public(public) {
+                quirks = true;
+            }
+            if attributes.len() == 1
+                && (public.starts_with("-//w3c//dtd html 4.01 frameset//")
+                    || public.starts_with("-//w3c//dtd html 4.01 transitional//")) {
+                quirks = true;
+            }
+        }
+        let last = attributes.get(attributes.len() - 1);
+        if last.name == "system"
+            && text::equal_fold(
+                last.value,
+                "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd",
+            ) {
+            quirks = true;
+        }
+    }
+    return (name, attributes, quirks)
+}
+
+fn foreign_quirky_public(value: string) -> bool {
+    for prefix in[
+        "+//silmaril//dtd html pro v0r11 19970101//",
+        "-//advasoft ltd//dtd html 3.0 aswedit + extensions//",
+        "-//as//dtd html 3.0 aswedit + extensions//",
+        "-//ietf//dtd html 2.0 level 1//",
+        "-//ietf//dtd html 2.0 level 2//",
+        "-//ietf//dtd html 2.0 strict level 1//",
+        "-//ietf//dtd html 2.0 strict level 2//",
+        "-//ietf//dtd html 2.0 strict//",
+        "-//ietf//dtd html 2.0//",
+        "-//ietf//dtd html 2.1e//",
+        "-//ietf//dtd html 3.0//",
+        "-//ietf//dtd html 3.2 final//",
+        "-//ietf//dtd html 3.2//",
+        "-//ietf//dtd html 3//",
+        "-//ietf//dtd html level 0//",
+        "-//ietf//dtd html level 1//",
+        "-//ietf//dtd html level 2//",
+        "-//ietf//dtd html level 3//",
+        "-//ietf//dtd html strict level 0//",
+        "-//ietf//dtd html strict level 1//",
+        "-//ietf//dtd html strict level 2//",
+        "-//ietf//dtd html strict level 3//",
+        "-//ietf//dtd html strict//",
+        "-//ietf//dtd html//",
+        "-//metrius//dtd metrius presentational//",
+        "-//microsoft//dtd internet explorer 2.0 html strict//",
+        "-//microsoft//dtd internet explorer 2.0 html//",
+        "-//microsoft//dtd internet explorer 2.0 tables//",
+        "-//microsoft//dtd internet explorer 3.0 html strict//",
+        "-//microsoft//dtd internet explorer 3.0 html//",
+        "-//microsoft//dtd internet explorer 3.0 tables//",
+        "-//netscape comm. corp.//dtd html//",
+        "-//netscape comm. corp.//dtd strict html//",
+        "-//o'reilly and associates//dtd html 2.0//",
+        "-//o'reilly and associates//dtd html extended 1.0//",
+        "-//o'reilly and associates//dtd html extended relaxed 1.0//",
+        "-//softquad software//dtd hotmetal pro 6.0::19990601::extensions to html 4.0//",
+        "-//softquad//dtd hotmetal pro 4.0::19971010::extensions to html 4.0//",
+        "-//spyglass//dtd html 2.0 extended//",
+        "-//sq//dtd html 2.0 hotmetal + extensions//",
+        "-//sun microsystems corp.//dtd hotjava html//",
+        "-//sun microsystems corp.//dtd hotjava strict html//",
+        "-//w3c//dtd html 3 1995-03-24//",
+        "-//w3c//dtd html 3.2 draft//",
+        "-//w3c//dtd html 3.2 final//",
+        "-//w3c//dtd html 3.2//",
+        "-//w3c//dtd html 3.2s draft//",
+        "-//w3c//dtd html 4.0 frameset//",
+        "-//w3c//dtd html 4.0 transitional//",
+        "-//w3c//dtd html experimental 19960712//",
+        "-//w3c//dtd html experimental 970421//",
+        "-//w3c//dtd w3 html//",
+        "-//w3o//dtd w3 html 3.0//",
+        "-//webtechs//dtd mozilla html 2.0//",
+        "-//webtechs//dtd mozilla html//",
+    ] {
+        if value.starts_with(prefix) {
+            return true
+        }
+    }
+    false
+}

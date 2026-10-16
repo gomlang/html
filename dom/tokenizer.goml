@@ -1,0 +1,781 @@
+package dom;
+
+use ecosystem::html;
+use std::text;
+
+struct HtmlToken {
+    typ: isize,
+    data: string,
+    attr: Vec[Attribute],
+}
+
+struct TokenizerAttributeSpan {
+    key_start: isize,
+    key_end: isize,
+    value_start: isize,
+    value_end: isize,
+}
+
+struct Tokenizer {
+    input: string,
+    position: Ref[isize],
+    exhausted: Ref[bool],
+    raw_start: Ref[isize],
+    data_start: Ref[isize],
+    data_end: Ref[isize],
+    raw_tag: Ref[string],
+    text_raw: Ref[bool],
+    convert_nul: Ref[bool],
+    cdata: Ref[bool],
+    attributes: Ref[Vec[TokenizerAttributeSpan]],
+}
+
+fn tokenizer_raw_context(context: string) -> string {
+    match text::to_ascii_lowercase(context) {
+        "title" => "title",
+        "textarea" => "textarea",
+        "style" | "xmp" | "iframe" | "noembed" | "noframes" | "script" | "noscript" | "plaintext" => "plaintext",
+        _ => "",
+    }
+}
+
+fn new_tokenizer(input: string, context: string) -> Tokenizer {
+    Tokenizer {
+        input,
+        position: Ref::new(0),
+        exhausted: Ref::new(false),
+        raw_start: Ref::new(0),
+        data_start: Ref::new(0),
+        data_end: Ref::new(0),
+        raw_tag: Ref::new(tokenizer_raw_context(context)),
+        text_raw: Ref::new(false),
+        convert_nul: Ref::new(false),
+        cdata: Ref::new(false),
+        attributes: Ref::new(Vec::new()),
+    }
+}
+
+fn tokenizer_next_is_not_raw_text(tokenizer: Tokenizer) -> () {
+    tokenizer.raw_tag.set("");
+}
+
+fn tokenizer_allow_cdata(tokenizer: Tokenizer, allow: bool) -> () {
+    tokenizer.cdata.set(allow);
+}
+
+fn tokenizer_read(z: Tokenizer) -> byte {
+    let position = z.position.get();
+    if position >= z.input.byte_len() {
+        z.exhausted.set(true);
+        return 0
+    }
+    z.position.set(position + 1);
+    z.input.byte_get(position)
+}
+
+fn tokenizer_back(z: Tokenizer, count: isize) -> () {
+    z.position.set(z.position.get() - count);
+}
+
+fn tokenizer_space(c: byte) -> bool {
+    c == b' ' || c == b'\n' || c == b'\r' || c == b'\t' || c == 12
+}
+
+fn tokenizer_alpha(c: byte) -> bool {
+    (c >= b'a' && c <= b'z') || (c >= b'A' && c <= b'Z')
+}
+
+fn tokenizer_skip_space(z: Tokenizer) -> () {
+    if z.exhausted.get() {
+        return
+    }
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            return
+        }
+        if !tokenizer_space(c) {
+            tokenizer_back(z, 1);
+            return
+        }
+    }
+}
+
+fn tokenizer_read_raw_end(z: Tokenizer) -> bool {
+    let raw_tag = z.raw_tag.get();
+    for index in 0..raw_tag.byte_len() {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            return false
+        }
+        let expected = raw_tag.byte_get(index);
+        if c != expected && c != expected - 32 {
+            tokenizer_back(z, 1);
+            return false
+        }
+    }
+    let c = tokenizer_read(z);
+    if z.exhausted.get() {
+        return false
+    }
+    if tokenizer_space(c) || c == b'/' || c == b'>' {
+        tokenizer_back(z, 3 + raw_tag.byte_len());
+        return true
+    }
+    tokenizer_back(z, 1);
+    false
+}
+
+enum TokenizerScriptState {
+    Data,
+    LessThan,
+    EndTag,
+    EscapeStart,
+    EscapeStartDash,
+    Escaped,
+    EscapedDash,
+    EscapedDashDash,
+    EscapedLessThan,
+    EscapedEndTag,
+    DoubleEscapeStart,
+    DoubleEscaped,
+    DoubleEscapedDash,
+    DoubleEscapedDashDash,
+    DoubleEscapedLessThan,
+    DoubleEscapeEnd,
+}
+
+fn tokenizer_read_script(z: Tokenizer) -> () {
+    let mut state = TokenizerScriptState::Data;
+    loop {
+        state = match state {
+            EndTag => {
+                if tokenizer_read_raw_end(z) || z.exhausted.get() {
+                    break
+                }
+                Data
+            },
+            EscapedEndTag => {
+                if tokenizer_read_raw_end(z) || z.exhausted.get() {
+                    break
+                }
+                Escaped
+            },
+            DoubleEscapeEnd => {
+                if tokenizer_read_raw_end(z) {
+                    z.position.set(z.position.get() + 9);
+                    Escaped
+                } else {
+                    if z.exhausted.get() {
+                        break
+                    }
+                    DoubleEscaped
+                }
+            },
+            DoubleEscapeStart => {
+                tokenizer_back(z, 1);
+                let mut matched = true;
+                for index in 0..6 {
+                    let c = tokenizer_read(z);
+                    if z.exhausted.get() {
+                        matched = false;
+                        break
+                    }
+                    if c != "script".byte_get(index) && c != "SCRIPT".byte_get(index) {
+                        tokenizer_back(z, 1);
+                        matched = false;
+                        break
+                    }
+                }
+                if z.exhausted.get() {
+                    break
+                }
+                if matched {
+                    let c = tokenizer_read(z);
+                    if z.exhausted.get() {
+                        break
+                    }
+                    if tokenizer_space(c) || c == b'/' || c == b'>' {
+                        DoubleEscaped
+                    } else {
+                        tokenizer_back(z, 1);
+                        Escaped
+                    }
+                } else {
+                    Escaped
+                }
+            },
+            _ => {
+                let c = tokenizer_read(z);
+                if z.exhausted.get() {
+                    break
+                }
+                match state {
+                    Data => if c == b'<' {
+                        LessThan
+                    } else {
+                        Data
+                    },
+                    LessThan => if c == b'/' {
+                        EndTag
+                    } else if c == b'!' {
+                        EscapeStart
+                    } else {
+                        tokenizer_back(z, 1);
+                        Data
+                    },
+                    EscapeStart => if c == b'-' {
+                        EscapeStartDash
+                    } else {
+                        tokenizer_back(z, 1);
+                        Data
+                    },
+                    EscapeStartDash => if c == b'-' {
+                        EscapedDashDash
+                    } else {
+                        tokenizer_back(z, 1);
+                        Data
+                    },
+                    Escaped => if c == b'-' {
+                        EscapedDash
+                    } else if c == b'<' {
+                        EscapedLessThan
+                    } else {
+                        Escaped
+                    },
+                    EscapedDash => if c == b'-' {
+                        EscapedDashDash
+                    } else if c == b'<' {
+                        EscapedLessThan
+                    } else {
+                        Escaped
+                    },
+                    EscapedDashDash => if c == b'-' {
+                        EscapedDashDash
+                    } else if c == b'<' {
+                        EscapedLessThan
+                    } else if c == b'>' {
+                        Data
+                    } else {
+                        Escaped
+                    },
+                    EscapedLessThan => if c == b'/' {
+                        EscapedEndTag
+                    } else if tokenizer_alpha(c) {
+                        DoubleEscapeStart
+                    } else {
+                        tokenizer_back(z, 1);
+                        Data
+                    },
+                    DoubleEscaped => if c == b'-' {
+                        DoubleEscapedDash
+                    } else if c == b'<' {
+                        DoubleEscapedLessThan
+                    } else {
+                        DoubleEscaped
+                    },
+                    DoubleEscapedDash => if c == b'-' {
+                        DoubleEscapedDashDash
+                    } else if c == b'<' {
+                        DoubleEscapedLessThan
+                    } else {
+                        DoubleEscaped
+                    },
+                    DoubleEscapedDashDash => if c == b'-' {
+                        DoubleEscapedDashDash
+                    } else if c == b'<' {
+                        DoubleEscapedLessThan
+                    } else if c == b'>' {
+                        Data
+                    } else {
+                        DoubleEscaped
+                    },
+                    DoubleEscapedLessThan => if c == b'/' {
+                        DoubleEscapeEnd
+                    } else {
+                        tokenizer_back(z, 1);
+                        DoubleEscaped
+                    },
+                    _ => Data,
+                }
+            },
+        };
+    }
+    z.data_end.set(z.position.get());
+}
+
+fn tokenizer_read_raw(z: Tokenizer) -> () {
+    if z.raw_tag.get() == "script" {
+        tokenizer_read_script(z);
+        z.text_raw.set(true);
+        z.raw_tag.set("");
+        return
+    }
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            break
+        }
+        if c != b'<' {
+            continue
+        }
+        let next = tokenizer_read(z);
+        if z.exhausted.get() {
+            break
+        }
+        if next != b'/' {
+            tokenizer_back(z, 1);
+            continue
+        }
+        if tokenizer_read_raw_end(z) || z.exhausted.get() {
+            break
+        }
+    }
+    z.data_end.set(z.position.get());
+    z.text_raw.set(z.raw_tag.get() != "textarea" && z.raw_tag.get() != "title");
+    z.raw_tag.set("");
+}
+
+fn tokenizer_abrupt_comment_end(z: Tokenizer) -> isize {
+    let raw = z.input.byte_slice(z.raw_start.get(), z.position.get());
+    if raw.byte_len() >= 4 {
+        let tail = raw.byte_slice(4, raw.byte_len());
+        if tail.ends_with("--!") {
+            return z.position.get() - 3
+        }
+        if tail.ends_with("--") {
+            return z.position.get() - 2
+        }
+        if tail.ends_with("-") {
+            return z.position.get() - 1
+        }
+    }
+    z.position.get()
+}
+
+fn tokenizer_read_comment(z: Tokenizer) -> () {
+    z.data_start.set(z.position.get());
+    let mut dash_count = 0;
+    let mut beginning = true;
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            z.data_end.set(tokenizer_abrupt_comment_end(z));
+            break
+        }
+        if c == b'-' {
+            dash_count += 1;
+            continue
+        }
+        if c == b'>' && (dash_count >= 2 || beginning) {
+            z.data_end.set(z.position.get() - 3);
+            break
+        }
+        if c == b'!' && dash_count >= 2 {
+            let next = tokenizer_read(z);
+            if z.exhausted.get() {
+                z.data_end.set(tokenizer_abrupt_comment_end(z));
+                break
+            }
+            if next == b'>' {
+                z.data_end.set(z.position.get() - 4);
+                break
+            }
+            if next == b'-' {
+                dash_count = 1;
+                beginning = false;
+                continue
+            }
+        }
+        dash_count = 0;
+        beginning = false;
+    }
+    if z.data_end.get() < z.data_start.get() {
+        z.data_end.set(z.data_start.get());
+    }
+}
+
+fn tokenizer_read_until_close(z: Tokenizer) -> () {
+    z.data_start.set(z.position.get());
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            z.data_end.set(z.position.get());
+            return
+        }
+        if c == b'>' {
+            z.data_end.set(z.position.get() - 1);
+            return
+        }
+    }
+}
+
+fn tokenizer_read_declaration_prefix(z: Tokenizer, prefix: string, fold: bool) -> bool {
+    for index in 0..prefix.byte_len() {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            z.position.set(z.data_start.get());
+            z.exhausted.set(false);
+            return false
+        }
+        let expected = prefix.byte_get(index);
+        if c != expected && (!fold || c != expected + 32) {
+            z.position.set(z.data_start.get());
+            return false
+        }
+    }
+    true
+}
+
+fn tokenizer_read_doctype(z: Tokenizer) -> bool {
+    if !tokenizer_read_declaration_prefix(z, "DOCTYPE", true) {
+        return false
+    }
+    tokenizer_skip_space(z);
+    if z.exhausted.get() {
+        z.data_start.set(z.position.get());
+        z.data_end.set(z.position.get());
+        return true
+    }
+    tokenizer_read_until_close(z);
+    true
+}
+
+fn tokenizer_read_cdata(z: Tokenizer) -> bool {
+    if !tokenizer_read_declaration_prefix(z, "[CDATA[", false) {
+        return false
+    }
+    z.data_start.set(z.position.get());
+    let mut brackets = 0;
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            z.data_end.set(z.position.get());
+            return true
+        }
+        if c == b']' {
+            brackets += 1;
+        } else {
+            if c == b'>' && brackets >= 2 {
+                z.data_end.set(z.position.get() - 3);
+                return true
+            }
+            brackets = 0;
+        }
+    }
+}
+
+fn tokenizer_read_markup(z: Tokenizer) -> isize {
+    z.data_start.set(z.position.get());
+    let first = tokenizer_read(z);
+    if z.exhausted.get() {
+        z.data_end.set(z.position.get());
+        return 5
+    }
+    let second = tokenizer_read(z);
+    if z.exhausted.get() {
+        z.data_end.set(
+            z.position.get()
+                - if first == b'>' {
+                    1
+                } else {
+                    0
+                },
+        );
+        return 5
+    }
+    if first == b'-' && second == b'-' {
+        tokenizer_read_comment(z);
+        return 5
+    }
+    tokenizer_back(z, 2);
+    if tokenizer_read_doctype(z) {
+        return 6
+    }
+    if z.cdata.get() && tokenizer_read_cdata(z) {
+        z.convert_nul.set(true);
+        return 1
+    }
+    tokenizer_read_until_close(z);
+    5
+}
+
+fn tokenizer_read_tag_name(z: Tokenizer) -> () {
+    z.data_start.set(z.position.get() - 1);
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            z.data_end.set(z.position.get());
+            return
+        }
+        if tokenizer_space(c) {
+            z.data_end.set(z.position.get() - 1);
+            return
+        }
+        if c == b'/' || c == b'>' {
+            tokenizer_back(z, 1);
+            z.data_end.set(z.position.get());
+            return
+        }
+    }
+}
+
+fn tokenizer_read_attr_key(z: Tokenizer) -> (isize, isize) {
+    let start = z.position.get();
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            return (start, z.position.get())
+        }
+        if c == b'=' && start + 1 == z.position.get() {
+            continue
+        }
+        if c == b'=' || tokenizer_space(c) || c == b'/' || c == b'>' {
+            tokenizer_back(z, 1);
+            return (start, z.position.get())
+        }
+    }
+}
+
+fn tokenizer_read_attr_value(z: Tokenizer) -> (isize, isize) {
+    let empty = z.position.get();
+    tokenizer_skip_space(z);
+    if z.exhausted.get() {
+        return (empty, empty)
+    }
+    let c = tokenizer_read(z);
+    if z.exhausted.get() || c == b'/' {
+        return (empty, empty)
+    }
+    if c != b'=' {
+        tokenizer_back(z, 1);
+        return (empty, empty)
+    }
+    tokenizer_skip_space(z);
+    if z.exhausted.get() {
+        return (empty, empty)
+    }
+    let quote = tokenizer_read(z);
+    if z.exhausted.get() {
+        return (empty, empty)
+    }
+    if quote == b'>' {
+        tokenizer_back(z, 1);
+        return (empty, empty)
+    }
+    if quote == b'\'' || quote == b'"' {
+        let start = z.position.get();
+        loop {
+            let current = tokenizer_read(z);
+            if z.exhausted.get() {
+                return (start, z.position.get())
+            }
+            if current == quote {
+                return (start, z.position.get() - 1)
+            }
+        }
+    }
+    let start = z.position.get() - 1;
+    loop {
+        let current = tokenizer_read(z);
+        if z.exhausted.get() {
+            return (start, z.position.get())
+        }
+        if tokenizer_space(current) {
+            return (start, z.position.get() - 1)
+        }
+        if current == b'>' {
+            tokenizer_back(z, 1);
+            return (start, z.position.get())
+        }
+    }
+}
+
+fn tokenizer_read_tag(z: Tokenizer, save_attr: bool) -> () {
+    let attributes = Vec::new();
+    let names = HashMap::new();
+    z.attributes.set(attributes);
+    tokenizer_read_tag_name(z);
+    tokenizer_skip_space(z);
+    if z.exhausted.get() {
+        return
+    }
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() || c == b'>' {
+            break
+        }
+        tokenizer_back(z, 1);
+        let (key_start, key_end) = tokenizer_read_attr_key(z);
+        let (value_start, value_end) = tokenizer_read_attr_value(z);
+        let key = text::to_ascii_lowercase(z.input.byte_slice(key_start, key_end));
+        if save_attr && key_start != key_end && names.get(key).is_none() {
+            attributes.push(TokenizerAttributeSpan { key_start, key_end, value_start, value_end });
+            names.set(key, true);
+        }
+        tokenizer_skip_space(z);
+        if z.exhausted.get() {
+            break
+        }
+    }
+}
+
+fn tokenizer_read_start_tag(z: Tokenizer) -> isize {
+    tokenizer_read_tag(z, true);
+    if z.exhausted.get() {
+        return 0
+    }
+    let name = text::to_ascii_lowercase(z.input.byte_slice(z.data_start.get(), z.data_end.get()));
+    match name {
+        "iframe" | "noembed" | "noframes" | "noscript" | "plaintext" | "script" | "style" | "textarea" | "title" | "xmp" => z.raw_tag.set(
+            name,
+        ),
+        _ => (),
+    }
+    let attributes = z.attributes.get();
+    if z.input.byte_get(z.position.get() - 2) == b'/'
+        && (attributes.len() == 0
+            || z.position.get() - 2 != attributes.get(attributes.len() - 1).value_end - 1) {
+        return 4
+    }
+    2
+}
+
+fn tokenizer_next_type(z: Tokenizer) -> isize {
+    z.raw_start.set(z.position.get());
+    z.data_start.set(z.position.get());
+    z.data_end.set(z.position.get());
+    if z.exhausted.get() {
+        return 0
+    }
+    if z.raw_tag.get() != "" {
+        if z.raw_tag.get() == "plaintext" {
+            z.position.set(z.input.byte_len());
+            z.exhausted.set(true);
+            z.data_end.set(z.position.get());
+            z.text_raw.set(true);
+        } else {
+            tokenizer_read_raw(z);
+        }
+        if z.data_end.get() > z.data_start.get() {
+            z.convert_nul.set(true);
+            return 1
+        }
+    }
+    z.text_raw.set(false);
+    z.convert_nul.set(false);
+    loop {
+        let c = tokenizer_read(z);
+        if z.exhausted.get() {
+            break
+        }
+        if c != b'<' {
+            continue
+        }
+        let next = tokenizer_read(z);
+        if z.exhausted.get() {
+            break
+        }
+        let typ = if tokenizer_alpha(next) {
+            2
+        } else if next == b'/' {
+            3
+        } else if next == b'!' || next == b'?' {
+            5
+        } else {
+            tokenizer_back(z, 1);
+            continue
+        };
+        let before = z.position.get() - 2;
+        if z.raw_start.get() < before {
+            z.position.set(before);
+            z.data_end.set(before);
+            return 1
+        }
+        if typ == 2 {
+            return tokenizer_read_start_tag(z)
+        }
+        if typ == 3 {
+            let end_start = tokenizer_read(z);
+            if z.exhausted.get() {
+                break
+            }
+            if end_start == b'>' {
+                return 5
+            }
+            if tokenizer_alpha(end_start) {
+                tokenizer_read_tag(z, false);
+                return if z.exhausted.get() {
+                    0
+                } else {
+                    3
+                }
+            }
+            tokenizer_back(z, 1);
+            tokenizer_read_until_close(z);
+            return 5
+        }
+        if next == b'!' {
+            return tokenizer_read_markup(z)
+        }
+        tokenizer_back(z, 1);
+        tokenizer_read_until_close(z);
+        return 5
+    }
+    if z.raw_start.get() < z.position.get() {
+        z.data_end.set(z.position.get());
+        return 1
+    }
+    0
+}
+
+fn tokenizer_newlines(value: string) -> string {
+    text::replace(text::replace(value, "\r\n", "\n"), "\r", "\n")
+}
+
+fn tokenizer_unescape(value: string, attribute: bool) -> string {
+    let context = if attribute {
+        html::DecodeContext::Attribute
+    } else {
+        html::DecodeContext::Text
+    };
+    html::unescape_with(value, context, 9223372036854775807).unwrap_or(value)
+}
+
+fn tokenizer_next(z: Tokenizer) -> HtmlToken {
+    let typ = tokenizer_next_type(z);
+    let attrs = Vec::new();
+    let mut data = "";
+    if typ == 1 || typ == 5 || typ == 6 {
+        data = tokenizer_newlines(z.input.byte_slice(z.data_start.get(), z.data_end.get()));
+        if z.convert_nul.get() || typ == 5 {
+            data = text::replace(data, "\u0000", "�");
+        }
+        if !z.text_raw.get() {
+            data = tokenizer_unescape(data, false);
+        }
+    } else if typ == 2 || typ == 3 || typ == 4 {
+        data = text::to_ascii_lowercase(
+            text::replace(z.input.byte_slice(z.data_start.get(), z.data_end.get()), "\u0000", "�"),
+        );
+        if typ != 3 {
+            for attr in z.attributes.get() {
+                let name = text::to_ascii_lowercase(
+                    text::replace(z.input.byte_slice(attr.key_start, attr.key_end), "\u0000", "�"),
+                );
+                let value = tokenizer_unescape(
+                    tokenizer_newlines(
+                        text::replace(
+                            z.input.byte_slice(attr.value_start, attr.value_end),
+                            "\u0000",
+                            "�",
+                        ),
+                    ),
+                    true,
+                );
+                attrs.push(Attribute { namespace: "", name, value });
+            }
+        }
+    }
+    HtmlToken { typ, data, attr: attrs }
+}

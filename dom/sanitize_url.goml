@@ -1,0 +1,402 @@
+package dom;
+
+use std::net;
+use std::text;
+
+fn sanitize_url_alpha(value: byte) -> bool {
+    (value >= b'a' && value <= b'z') || (value >= b'A' && value <= b'Z')
+}
+
+fn sanitize_url_digit(value: byte) -> bool {
+    value >= b'0' && value <= b'9'
+}
+
+fn sanitize_url_byte_in(value: byte, choices: string) -> bool {
+    for index in 0..choices.byte_len() {
+        if choices.byte_get(index) == value {
+            return true
+        }
+    }
+    false
+}
+
+fn sanitize_url_safe(value: byte, mode: isize) -> bool {
+    if sanitize_url_alpha(value) || sanitize_url_digit(value) || sanitize_url_byte_in(value, "-_.~") {
+        return true
+    }
+    if mode == 2 || mode == 3 {
+        return sanitize_url_byte_in(value, "!$&'()*+,;=:[]<>\"")
+    }
+    if sanitize_url_byte_in(value, "$&+,/:;=?@") {
+        if mode == 1 {
+            return value != b'?'
+        }
+        if mode == 4 {
+            return value != b'@' && value != b'/' && value != b'?' && value != b':'
+        }
+        if mode == 5 {
+            return true
+        }
+    }
+    mode == 5 && sanitize_url_byte_in(value, "!()*")
+}
+
+fn sanitize_url_hex(value: byte) -> Option[byte] {
+    if sanitize_url_digit(value) {
+        Option::Some(value - b'0')
+    } else if value >= b'a' && value <= b'f' {
+        Option::Some(value - b'a' + 10)
+    } else if value >= b'A' && value <= b'F' {
+        Option::Some(value - b'A' + 10)
+    } else {
+        Option::None
+    }
+}
+
+fn sanitize_url_decode(value: string, mode: isize) -> Option[Vec[byte]] {
+    let output = Vec::new();
+    let mut index = 0;
+    while index < value.byte_len() {
+        let current = value.byte_get(index);
+        if current == b'%' {
+            if index + 2 >= value.byte_len() {
+                return Option::None
+            }
+            let Option::Some(high) = sanitize_url_hex(value.byte_get(index + 1)) else {
+                return Option::None
+            };
+            let Option::Some(low) = sanitize_url_hex(value.byte_get(index + 2)) else {
+                return Option::None
+            };
+            let decoded = high * 16 + low;
+            if mode == 2 && decoded < 128 && decoded != b'%' {
+                return Option::None
+            }
+            if mode == 3 && decoded != b'%' && decoded != b' ' && !sanitize_url_safe(decoded, 2) {
+                return Option::None
+            }
+            output.push(decoded);
+            index += 3;
+        } else {
+            if (mode == 2 || mode == 3) && current < 128 && !sanitize_url_safe(current, mode) {
+                return Option::None
+            }
+            output.push(current);
+            index += 1;
+        }
+    }
+    Option::Some(output)
+}
+
+fn sanitize_url_encode(value: Vec[byte], mode: isize) -> string {
+    let output = text::StringBuilder::new();
+    for current in value {
+        if sanitize_url_safe(current, mode) {
+            output.values.push(current);
+        } else {
+            output.values.push(b'%');
+            output.values.push("0123456789ABCDEF".byte_get((current / 16).to_isize()));
+            output.values.push("0123456789ABCDEF".byte_get((current % 16).to_isize()));
+        }
+    }
+    output.to_string()
+}
+
+fn sanitize_url_encoded_component(value: string, mode: isize) -> Option[string] {
+    let Option::Some(decoded) = sanitize_url_decode(value, mode) else {
+        return Option::None
+    };
+    let mut valid = true;
+    for index in 0..value.byte_len() {
+        let current = value.byte_get(index);
+        if !sanitize_url_byte_in(current, "!$&'()*+,;=:@[]%") && !sanitize_url_safe(current, mode) {
+            valid = false;
+            break
+        }
+    }
+    if valid {
+        return Option::Some(value)
+    }
+    if mode == 1 && decoded.len() == 1 && decoded.get(0) == b'*' {
+        return Option::Some("*")
+    }
+    Option::Some(sanitize_url_encode(decoded, mode))
+}
+
+fn sanitize_url_last(value: string, needle: byte) -> isize {
+    let mut index = value.byte_len();
+    while index > 0 {
+        index -= 1;
+        if value.byte_get(index) == needle {
+            return index
+        }
+    }
+    return -1
+}
+
+fn sanitize_url_first(value: string, needle: byte) -> isize {
+    for index in 0..value.byte_len() {
+        if value.byte_get(index) == needle {
+            return index
+        }
+    }
+    return -1
+}
+
+fn sanitize_url_optional_port(value: string) -> bool {
+    if value == "" {
+        return true
+    }
+    if value.byte_get(0) != b':' {
+        return false
+    }
+    for index in 1..value.byte_len() {
+        if !sanitize_url_digit(value.byte_get(index)) {
+            return false
+        }
+    }
+    true
+}
+
+fn sanitize_url_host(value: string, scheme: string) -> Option[string] {
+    let open = sanitize_url_last(value, b'[');
+    if open > 0 {
+        return Option::None
+    }
+    if open == 0 {
+        let close = sanitize_url_last(value, b']');
+        if close < 0 {
+            return Option::None
+        }
+        let port = value.byte_slice(close + 1, value.byte_len());
+        if !sanitize_url_optional_port(port) {
+            return Option::None
+        }
+        let hostname = value.byte_slice(1, close);
+        let decoded = match hostname.split_once("%25") {
+            Option::Some((host, zone)) => {
+                let Option::Some(prefix) = sanitize_url_decode(host, 2) else {
+                    return Option::None
+                };
+                let Option::Some(suffix) = sanitize_url_decode("%25" + zone, 3) else {
+                    return Option::None
+                };
+                for part in suffix {
+                    prefix.push(part);
+                }
+                prefix
+            },
+            Option::None => {
+                let Option::Some(host) = sanitize_url_decode(hostname, 2) else {
+                    return Option::None
+                };
+                host
+            },
+        };
+        let (valid, decoded_host) = string_from_utf8(decoded);
+        if !valid {
+            return Option::None
+        }
+        let address = match decoded_host.split_once("%") {
+            Option::Some((address, zone)) => {
+                if zone == "" {
+                    return Option::None
+                }
+                address
+            },
+            Option::None => decoded_host,
+        };
+        let Ok(address) = net::IpAddr::parse(address) else {
+            return Option::None
+        };
+        if !address.is_ipv6() {
+            return Option::None
+        }
+        return Option::Some("[" + sanitize_url_encode(decoded, 2) + "]" + port)
+    }
+    let first_colon = sanitize_url_first(value, b':');
+    if first_colon >= 0 {
+        let colon = if scheme == "http" || scheme == "https" {
+            first_colon
+        } else {
+            sanitize_url_last(value, b':')
+        };
+        if !sanitize_url_optional_port(value.byte_slice(colon, value.byte_len())) {
+            return Option::None
+        }
+    }
+    let Option::Some(decoded) = sanitize_url_decode(value, 2) else {
+        return Option::None
+    };
+    Option::Some(sanitize_url_encode(decoded, 2))
+}
+
+fn sanitize_url_user(value: string) -> Option[string] {
+    for index in 0..value.byte_len() {
+        let current = value.byte_get(index);
+        if !sanitize_url_alpha(current) && !sanitize_url_digit(current)
+            && !sanitize_url_byte_in(current, "-._:~!$&'()*+,;=%@") {
+            return Option::None
+        }
+    }
+    match value.split_once(":") {
+        Option::Some((username, password)) => {
+            let Option::Some(user) = sanitize_url_decode(username, 4) else {
+                return Option::None
+            };
+            let Option::Some(pass) = sanitize_url_decode(password, 4) else {
+                return Option::None
+            };
+            Option::Some(sanitize_url_encode(user, 4) + ":" + sanitize_url_encode(pass, 4))
+        },
+        Option::None => {
+            let Option::Some(user) = sanitize_url_decode(value, 4) else {
+                return Option::None
+            };
+            Option::Some(sanitize_url_encode(user, 4))
+        },
+    }
+}
+
+fn sanitize_url_scheme(value: string) -> Option[(string, string)] {
+    for index in 0..value.byte_len() {
+        let current = value.byte_get(index);
+        if sanitize_url_alpha(current) {
+            continue
+        }
+        if sanitize_url_digit(current) || current == b'+' || current == b'-' || current == b'.' {
+            if index == 0 {
+                return Option::Some(("", value))
+            }
+            continue
+        }
+        if current == b':' {
+            if index == 0 {
+                return Option::None
+            }
+            return Option::Some(
+                (
+                    text::to_ascii_lowercase(value.byte_slice(0, index)),
+                    value.byte_slice(index + 1, value.byte_len()),
+                ),
+            )
+        }
+        return Option::Some(("", value))
+    }
+    Option::Some(("", value))
+}
+
+fn sanitize_url(value: string) -> Option[string] {
+    let trimmed = text::trim_space(value);
+    if trimmed == "" {
+        return Option::None
+    }
+    for index in 0..trimmed.byte_len() {
+        let current = trimmed.byte_get(index);
+        if current == b' ' || current == b'\t' || current == b'\n' {
+            return Option::None
+        }
+    }
+    let (main, fragment) = match trimmed.split_once("#") {
+        Option::Some((main, fragment)) => (main, fragment),
+        Option::None => (trimmed, ""),
+    };
+    for index in 0..main.byte_len() {
+        let current = main.byte_get(index);
+        if current < 32 || current == 127 {
+            return Option::None
+        }
+    }
+    let Option::Some((scheme, remainder)) = sanitize_url_scheme(main) else {
+        return Option::None
+    };
+    if scheme != "" && scheme != "http" && scheme != "https" && scheme != "mailto" {
+        return Option::None
+    }
+    let (rest, query) = match remainder.split_once("?") {
+        Option::Some((rest, query)) => (rest, Option::Some(query)),
+        Option::None => (remainder, Option::None),
+    };
+    let output = text::StringBuilder::new();
+    if scheme != "" {
+        output.write_string(scheme + ":");
+    }
+    if !rest.starts_with("/") && scheme != "" {
+        output.write_string(rest);
+    } else {
+        if !rest.starts_with("/") {
+            let first = match rest.split_once("/") {
+                Option::Some((first, _)) => first,
+                Option::None => rest,
+            };
+            if first.contains(":") {
+                return Option::None
+            }
+        }
+        let mut path = rest;
+        if rest.starts_with("//") && (scheme != "" || !rest.starts_with("///")) {
+            let authority_and_path = rest.byte_slice(2, rest.byte_len());
+            let slash = sanitize_url_first(authority_and_path, b'/');
+            let authority = if slash >= 0 {
+                path = authority_and_path.byte_slice(slash, authority_and_path.byte_len());
+                authority_and_path.byte_slice(0, slash)
+            } else {
+                path = "";
+                authority_and_path
+            };
+            let at = sanitize_url_last(authority, b'@');
+            let raw_host = if at < 0 {
+                authority
+            } else {
+                authority.byte_slice(at + 1, authority.byte_len())
+            };
+            let Option::Some(host) = sanitize_url_host(raw_host, scheme) else {
+                return Option::None
+            };
+            let user = if at < 0 {
+                Option::None
+            } else {
+                let Option::Some(user) = sanitize_url_user(authority.byte_slice(0, at)) else {
+                    return Option::None
+                };
+                Option::Some(user)
+            };
+            if scheme != "" || host != "" || user.is_some() {
+                if host != "" || path != "" || user.is_some() {
+                    output.write_string("//");
+                }
+                if let Option::Some(user) = user {
+                    output.write_string(user + "@");
+                }
+                output.write_string(host);
+            }
+        }
+        let Option::Some(encoded_path) = sanitize_url_encoded_component(path, 1) else {
+            return Option::None
+        };
+        if output.len() == 0 {
+            let first = match encoded_path.split_once("/") {
+                Option::Some((first, _)) => first,
+                Option::None => encoded_path,
+            };
+            if first.contains(":") {
+                output.write_string("./");
+            }
+        }
+        output.write_string(encoded_path);
+    }
+    if let Option::Some(query) = query {
+        output.write_string("?" + query);
+    }
+    if fragment != "" {
+        let Option::Some(encoded_fragment) = sanitize_url_encoded_component(fragment, 5) else {
+            return Option::None
+        };
+        output.write_string("#" + encoded_fragment);
+    }
+    if output.len() == 0 {
+        Option::None
+    } else {
+        Option::Some(output.to_string())
+    }
+}

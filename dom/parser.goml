@@ -1,0 +1,2750 @@
+package dom;
+
+use std::text;
+
+fn parser_top(p: HtmlParser) -> RawNode {
+    {
+        let mut n = stack_top(p.oe);
+        if (n != nil_node()) {
+            return n;
+        }
+    };
+    return p.doc;
+}
+
+fn parser_pop_until(p: HtmlParser, s: isize, match_tags: Vec[string]) -> bool {
+    {
+        let mut i = parser_index_of_element_in_scope(p, s, match_tags);
+        if (i != -1) {
+            p.oe.truncate(i);
+            return true;
+        }
+    };
+    return false;
+}
+
+fn parser_index_of_element_in_scope(p: HtmlParser, s: isize, match_tags: Vec[string]) -> isize {
+    {
+        let mut i = (p.oe.len() - 1);
+        while (i >= 0) {
+            let mut tag_atom = node_data(p.oe.get(i));
+            if (node_namespace(p.oe.get(i)) == "") {
+                for t in match_tags {
+                    if (t == tag_atom) {
+                        return i;
+                    }
+                }
+                match s {
+                    0 => {},
+                    1 => {
+                        if ((tag_atom == "ol") || (tag_atom == "ul")) {
+                            return -1;
+                        }
+                    },
+                    2 => {
+                        if (tag_atom == "button") {
+                            return -1;
+                        }
+                    },
+                    3 => {
+                        if (((tag_atom == "html") || (tag_atom == "table"))
+                            || (tag_atom == "template")) {
+                            return -1;
+                        }
+                    },
+                    _ => {
+                        p.failed.set(true);
+                    },
+                }
+            }
+            match s {
+                0 | 1 | 2 => {
+                    if scope_stop_tag(node_namespace(p.oe.get(i)), tag_atom) {
+                        return -1;
+                    }
+                },
+                _ => {},
+            }
+            i = i - 1;
+        }
+    };
+    return -1;
+}
+
+fn parser_element_in_scope(p: HtmlParser, s: isize, match_tags: Vec[string]) -> bool {
+    return (parser_index_of_element_in_scope(p, s, match_tags) != -1);
+}
+
+fn parser_clear_stack_to_context(p: HtmlParser, s: isize) -> () {
+    {
+        let mut i = (p.oe.len() - 1);
+        while (i >= 0) {
+            let mut tag_atom = node_data(p.oe.get(i));
+            match s {
+                3 => {
+                    if (((tag_atom == "html") || (tag_atom == "table")) || (tag_atom == "template")) {
+                        p.oe.truncate((i + 1));
+                        return;
+                    }
+                },
+                4 => {
+                    if (((tag_atom == "html") || (tag_atom == "tr")) || (tag_atom == "template")) {
+                        p.oe.truncate((i + 1));
+                        return;
+                    }
+                },
+                5 => {
+                    if (((((tag_atom == "html") || (tag_atom == "tbody")) || (tag_atom == "tfoot"))
+                        || (tag_atom == "thead"))
+                        || (tag_atom == "template")) {
+                        p.oe.truncate((i + 1));
+                        return;
+                    }
+                },
+                _ => {
+                    p.failed.set(true);
+                },
+            }
+            i = i - 1;
+        }
+    };
+}
+
+fn parser_parse_generic_raw_text_element(p: HtmlParser) -> () {
+    parser_add_element(p);
+    p.original_im.set(p.im.get());
+    p.im.set(28);
+}
+
+fn parser_generate_implied_end_tags(p: HtmlParser, exceptions: Vec[string]) -> () {
+    let mut i: isize = 0;
+    i = (p.oe.len() - 1);
+    'loop: while (i >= 0) {
+        let mut n = p.oe.get(i);
+        if (node_type(n) != 3) {
+            break;
+        }
+        match node_data(n) {
+            "dd" | "dt" | "li" | "optgroup" | "option" | "p" | "rb" | "rp" | "rt" | "rtc" => {
+                for except in exceptions {
+                    if (node_data(n) == except) {
+                        break 'loop;
+                    }
+                }
+                i = i - 1;
+                continue;
+            },
+            _ => {},
+        }
+        break;
+    };
+    p.oe.truncate((i + 1));
+}
+
+fn parser_add_child(p: HtmlParser, n: RawNode) -> () {
+    if parser_should_foster_parent(p) {
+        parser_foster_parent(p, n);
+    } else {
+        node_append_child(parser_top(p), n);
+    }
+    if (node_type(n) == 3) {
+        parser_insert_open_element(p, n);
+    }
+}
+
+fn parser_insert_open_element(p: HtmlParser, n: RawNode) -> () {
+    p.oe.push(n);
+    if (p.oe.len() > 512) {
+        p.failed.set(true);
+    }
+}
+
+fn parser_should_foster_parent(p: HtmlParser) -> bool {
+    if p.foster_parenting.get() {
+        match node_data(parser_top(p)) {
+            "table" | "tbody" | "tfoot" | "thead" | "tr" => {
+                return true;
+            },
+            _ => {},
+        }
+    }
+    return false;
+}
+
+fn parser_foster_parent(p: HtmlParser, n: RawNode) -> () {
+    let mut table: RawNode = nil_node();
+    let mut parent: RawNode = nil_node();
+    let mut prev: RawNode = nil_node();
+    let mut template: RawNode = nil_node();
+    let mut i: isize = 0;
+    i = (p.oe.len() - 1);
+    while (i >= 0) {
+        if (node_data(p.oe.get(i)) == "table") {
+            table = p.oe.get(i);
+            break;
+        }
+        i = i - 1;
+    }
+    let mut j: isize = 0;
+    j = (p.oe.len() - 1);
+    while (j >= 0) {
+        if (node_data(p.oe.get(j)) == "template") {
+            template = p.oe.get(j);
+            break;
+        }
+        j = j - 1;
+    }
+    if ((template != nil_node()) && (((table == nil_node()) || (j > i)))) {
+        node_append_child(template, n);
+        return;
+    }
+    if (table == nil_node()) {
+        parent = p.oe.get(0);
+    } else {
+        parent = node_parent(table);
+    }
+    if (parent == nil_node()) {
+        parent = p.oe.get((i - 1));
+    }
+    if (table != nil_node()) {
+        prev = node_prev_sibling(table);
+    } else {
+        prev = node_last_child(parent);
+    }
+    if (((prev != nil_node()) && (node_type(prev) == 1)) && (node_type(n) == 1)) {
+        set_node_data(prev, node_data(prev) + node_data(n));
+        return;
+    }
+    node_insert_before(parent, n, table);
+}
+
+fn parser_add_text(p: HtmlParser, text: string) -> () {
+    if (text == "") {
+        return;
+    }
+    if parser_should_foster_parent(p) {
+        parser_foster_parent(p, new_node(1, text, "", Vec::new()));
+        return;
+    }
+    let mut t = parser_top(p);
+    {
+        let mut n = node_last_child(t);
+        if ((n != nil_node()) && (node_type(n) == 1)) {
+            set_node_data(n, node_data(n) + text);
+            return;
+        }
+    };
+    parser_add_child(p, new_node(1, text, "", Vec::new()));
+}
+
+fn parser_add_element(p: HtmlParser) -> () {
+    parser_add_child(p, new_node(3, p.tok.get().data, "", p.tok.get().attr));
+}
+
+fn parser_add_formatting_element(p: HtmlParser) -> () {
+    let mut tag_atom = p.tok.get().data;
+    let mut attr = p.tok.get().attr;
+    parser_add_element(p);
+    sort_attributes(attr);
+    let mut identical_elements = 0;
+    {
+        let mut i = (p.afe.len() - 1);
+        'find_identical_elements: while (i >= 0) {
+            let mut n = p.afe.get(i);
+            if (node_type(n) == 7) {
+                break;
+            }
+            if (node_type(n) != 3) {
+                i = i - 1;
+                continue;
+            }
+            if (node_namespace(n) != "") {
+                i = i - 1;
+                continue;
+            }
+            if (node_data(n) != tag_atom) {
+                i = i - 1;
+                continue;
+            }
+            if !attributes_equal(node_attr(n), attr) {
+                i = i - 1;
+                continue 'find_identical_elements;
+            }
+            identical_elements = identical_elements + 1;
+            if (identical_elements >= 3) {
+                stack_remove(p.afe, n);
+            }
+            i = i - 1;
+        };
+    };
+    let mut top = parser_top(p);
+    sort_attributes(node_attr(top));
+    p.afe.push(top);
+}
+
+fn parser_clear_active_formatting_elements(p: HtmlParser) -> () {
+    while true {
+        {
+            let mut n = stack_pop(p.afe);
+            if ((p.afe.len() == 0) || (node_type(n) == 7)) {
+                return;
+            }
+        };
+    }
+}
+
+fn parser_reconstruct_active_formatting_elements(p: HtmlParser) -> () {
+    let mut n = stack_top(p.afe);
+    if (n == nil_node()) {
+        return;
+    }
+    if ((node_type(n) == 7) || (stack_index(p.oe, n) != -1)) {
+        return;
+    }
+    let mut i = (p.afe.len() - 1);
+    while ((node_type(n) != 7) && (stack_index(p.oe, n) == -1)) {
+        if (i == 0) {
+            i = -1;
+            break;
+        }
+        i = i - 1;
+        n = p.afe.get(i);
+    }
+    while true {
+        i = i + 1;
+        let mut clone = node_clone(p.afe.get(i));
+        parser_add_child(p, clone);
+        p.afe.set(i, clone);
+        if (i == (p.afe.len() - 1)) {
+            break;
+        }
+    }
+}
+
+fn parser_acknowledge_self_closing_tag(p: HtmlParser) -> () {
+    p.has_self_closing_token.set(false);
+}
+
+fn parser_set_original_im(p: HtmlParser) -> () {
+    if (p.original_im.get() != -1) {
+        p.failed.set(true);
+    }
+    p.original_im.set(p.im.get());
+}
+
+fn parser_reset_insertion_mode(p: HtmlParser) -> () {
+    {
+        let mut i = (p.oe.len() - 1);
+        while (i >= 0) {
+            let mut n = p.oe.get(i);
+            let mut last = (i == 0);
+            if (last && (p.context != nil_node())) {
+                n = p.context;
+            }
+            match node_data(n) {
+                "td" | "th" => {
+                    p.im.set(34);
+                },
+                "tr" => {
+                    p.im.set(33);
+                },
+                "tbody" | "thead" | "tfoot" => {
+                    p.im.set(32);
+                },
+                "caption" => {
+                    p.im.set(30);
+                },
+                "colgroup" => {
+                    p.im.set(31);
+                },
+                "table" => {
+                    p.im.set(29);
+                },
+                "template" => {
+                    if (node_namespace(n) != "") {
+                        i = i - 1;
+                        continue;
+                    }
+                    p.im.set(mode_top(p.template_stack));
+                },
+                "head" => {
+                    p.im.set(22);
+                },
+                "body" => {
+                    p.im.set(25);
+                },
+                "frameset" => {
+                    p.im.set(37);
+                },
+                "html" => {
+                    if (p.head.get() == nil_node()) {
+                        p.im.set(21);
+                    } else {
+                        p.im.set(24);
+                    }
+                },
+                _ => {
+                    if last {
+                        p.im.set(25);
+                        return;
+                    }
+                    i = i - 1;
+                    continue;
+                },
+            }
+            return;
+        }
+    };
+}
+
+fn initial_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 => {
+            p.tok.set(
+                HtmlToken {
+                    data: text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c"),
+                    ..p.tok.get(),
+                },
+            );
+            if (p.tok.get().data.byte_len() == 0) {
+                return true;
+            }
+        },
+        5 => {
+            node_append_child(p.doc, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        6 => {
+            let mut(n, quirks) = parser_doctype(p.tok.get().data);
+            node_append_child(p.doc, n);
+            p.quirks.set(quirks);
+            p.im.set(20);
+            return true;
+        },
+        _ => {},
+    }
+    p.quirks.set(true);
+    p.im.set(20);
+    return false;
+}
+
+fn before_htmlim(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        6 => {
+            return true;
+        },
+        1 => {
+            p.tok.set(
+                HtmlToken {
+                    data: text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c"),
+                    ..p.tok.get(),
+                },
+            );
+            if (p.tok.get().data.byte_len() == 0) {
+                return true;
+            }
+        },
+        2 => {
+            if (p.tok.get().data == "html") {
+                parser_add_element(p);
+                p.im.set(21);
+                return true;
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "head" | "body" | "html" | "br" => {
+                    parser_parse_implied_token(p, 2, "html", "html");
+                    return false;
+                },
+                _ => {
+                    return true;
+                },
+            }
+        },
+        5 => {
+            node_append_child(p.doc, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        _ => {},
+    }
+    parser_parse_implied_token(p, 2, "html", "html");
+    return false;
+}
+
+fn before_head_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 => {
+            p.tok.set(
+                HtmlToken {
+                    data: text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c"),
+                    ..p.tok.get(),
+                },
+            );
+            if (p.tok.get().data.byte_len() == 0) {
+                return true;
+            }
+        },
+        2 => {
+            match p.tok.get().data {
+                "head" => {
+                    parser_add_element(p);
+                    p.head.set(parser_top(p));
+                    p.im.set(22);
+                    return true;
+                },
+                "html" => {
+                    return in_body_im(p);
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "head" | "body" | "html" | "br" => {
+                    parser_parse_implied_token(p, 2, "head", "head");
+                    return false;
+                },
+                _ => {
+                    return true;
+                },
+            }
+        },
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        6 => {
+            return true;
+        },
+        _ => {},
+    }
+    parser_parse_implied_token(p, 2, "head", "head");
+    return false;
+}
+
+fn in_head_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 => {
+            let mut s = text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c");
+            if (s.byte_len() < p.tok.get().data.byte_len()) {
+                parser_add_text(
+                    p,
+                    p.tok.get().data.byte_slice(0, (p.tok.get().data.byte_len() - s.byte_len())),
+                );
+                if (s == "") {
+                    return true;
+                }
+                p.tok.set(HtmlToken { data: s, ..p.tok.get() });
+            }
+        },
+        2 => {
+            match p.tok.get().data {
+                "html" => {
+                    return in_body_im(p);
+                },
+                "base" | "basefont" | "bgsound" | "link" | "meta" => {
+                    parser_add_element(p);
+                    stack_pop(p.oe);
+                    parser_acknowledge_self_closing_tag(p);
+                    return true;
+                },
+                "noscript" => {
+                    if p.scripting {
+                        parser_parse_generic_raw_text_element(p);
+                        return true;
+                    }
+                    parser_add_element(p);
+                    p.im.set(23);
+                    tokenizer_next_is_not_raw_text(p.tokenizer);
+                    return true;
+                },
+                "script" | "title" => {
+                    parser_add_element(p);
+                    parser_set_original_im(p);
+                    p.im.set(28);
+                    return true;
+                },
+                "noframes" | "style" => {
+                    parser_parse_generic_raw_text_element(p);
+                    return true;
+                },
+                "head" => {
+                    return true;
+                },
+                "template" => {
+                    for e in p.oe {
+                        if (node_namespace(e) != "") {
+                            p.im.set(41);
+                            return true;
+                        }
+                    }
+                    parser_add_element(p);
+                    p.afe.push(new_node(7, "", "", Vec::new()));
+                    p.frameset_ok.set(false);
+                    p.im.set(35);
+                    p.template_stack.push(35);
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "head" => {
+                    stack_pop(p.oe);
+                    p.im.set(24);
+                    return true;
+                },
+                "body" | "html" | "br" => {
+                    parser_parse_implied_token(p, 3, "head", "head");
+                    return false;
+                },
+                "template" => {
+                    if !stack_contains(p.oe, "template") {
+                        return true;
+                    }
+                    parser_generate_implied_end_tags(
+                        p,
+                        {
+                            let v = Vec::new();
+                            v
+                        },
+                    );
+                    {
+                        let mut i = (p.oe.len() - 1);
+                        while (i >= 0) {
+                            {
+                                let mut n = p.oe.get(i);
+                                if ((node_namespace(n) == "") && (node_data(n) == "template")) {
+                                    p.oe.truncate(i);
+                                    break;
+                                }
+                            };
+                            i = i - 1;
+                        }
+                    };
+                    parser_clear_active_formatting_elements(p);
+                    mode_pop(p.template_stack);
+                    parser_reset_insertion_mode(p);
+                    return true;
+                },
+                _ => {
+                    return true;
+                },
+            }
+        },
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        6 => {
+            return true;
+        },
+        _ => {},
+    }
+    parser_parse_implied_token(p, 3, "head", "head");
+    return false;
+}
+
+fn in_head_noscript_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        6 => {
+            return true;
+        },
+        2 => {
+            match p.tok.get().data {
+                "html" => {
+                    return in_body_im(p);
+                },
+                "basefont" | "bgsound" | "link" | "meta" | "noframes" | "style" => {
+                    return in_head_im(p);
+                },
+                "head" => {
+                    return true;
+                },
+                "noscript" => {
+                    tokenizer_next_is_not_raw_text(p.tokenizer);
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "noscript" | "br" => {},
+                _ => {
+                    return true;
+                },
+            }
+        },
+        1 => {
+            let mut s = text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c");
+            if (s.byte_len() == 0) {
+                return in_head_im(p);
+            }
+        },
+        5 => {
+            return in_head_im(p);
+        },
+        _ => {},
+    }
+    stack_pop(p.oe);
+    if (node_data(parser_top(p)) != "head") {
+        p.failed.set(true);
+    }
+    p.im.set(22);
+    if (p.tok.get().data == "noscript") {
+        return true;
+    }
+    return false;
+}
+
+fn after_head_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 => {
+            let mut s = text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c");
+            if (s.byte_len() < p.tok.get().data.byte_len()) {
+                parser_add_text(
+                    p,
+                    p.tok.get().data.byte_slice(0, (p.tok.get().data.byte_len() - s.byte_len())),
+                );
+                if (s == "") {
+                    return true;
+                }
+                p.tok.set(HtmlToken { data: s, ..p.tok.get() });
+            }
+        },
+        2 => {
+            match p.tok.get().data {
+                "html" => {
+                    return in_body_im(p);
+                },
+                "body" => {
+                    parser_add_element(p);
+                    p.frameset_ok.set(false);
+                    p.im.set(25);
+                    return true;
+                },
+                "frameset" => {
+                    parser_add_element(p);
+                    p.im.set(37);
+                    return true;
+                },
+                "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "script" | "style" | "template" | "title" => {
+                    parser_insert_open_element(p, p.head.get());
+                    defer stack_remove(p.oe, p.head.get());
+                    return in_head_im(p);
+                },
+                "head" => {
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "body" | "html" | "br" => {},
+                "template" => {
+                    return in_head_im(p);
+                },
+                _ => {
+                    return true;
+                },
+            }
+        },
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        6 => {
+            return true;
+        },
+        _ => {},
+    }
+    parser_parse_implied_token(p, 2, "body", "body");
+    p.frameset_ok.set(true);
+    if (p.tok.get().typ == 0) {
+        return true;
+    }
+    return false;
+}
+
+fn in_body_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 => {
+            let mut d = p.tok.get().data;
+            {
+                let mut n = stack_top(p.oe);
+                match node_data(n) {
+                    "pre" | "listing" => {
+                        if (node_first_child(n) == nil_node()) {
+                            if ((d != "") && (d.byte_get(0) == b'\r')) {
+                                d = d.byte_slice(1, d.byte_len());
+                            }
+                            if ((d != "") && (d.byte_get(0) == b'\n')) {
+                                d = d.byte_slice(1, d.byte_len());
+                            }
+                        }
+                    },
+                    _ => {},
+                }
+            };
+            d = text::replace(d, "\u0000", "");
+            if (d == "") {
+                return true;
+            }
+            parser_reconstruct_active_formatting_elements(p);
+            parser_add_text(p, d);
+            if (p.frameset_ok.get() && (text::trim_start_chars(d, " \t\r\n\u000c") != "")) {
+                p.frameset_ok.set(false);
+            }
+        },
+        2 => {
+            match p.tok.get().data {
+                "html" => {
+                    if stack_contains(p.oe, "template") {
+                        return true;
+                    }
+                    copy_attributes(p.oe.get(0), p.tok.get());
+                },
+                "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "script" | "style" | "template" | "title" => {
+                    return in_head_im(p);
+                },
+                "body" => {
+                    if stack_contains(p.oe, "template") {
+                        return true;
+                    }
+                    if (p.oe.len() >= 2) {
+                        let mut body = p.oe.get(1);
+                        if ((node_type(body) == 3) && (node_data(body) == "body")) {
+                            p.frameset_ok.set(false);
+                            copy_attributes(body, p.tok.get());
+                        }
+                    }
+                },
+                "frameset" => {
+                    if ((!p.frameset_ok.get() || (p.oe.len() < 2))
+                        || (node_data(p.oe.get(1)) != "body")) {
+                        return true;
+                    }
+                    let mut body = p.oe.get(1);
+                    if (node_parent(body) != nil_node()) {
+                        node_remove_child(node_parent(body), body);
+                    }
+                    p.oe.truncate(1);
+                    parser_add_element(p);
+                    p.im.set(37);
+                    return true;
+                },
+                "address" | "article" | "aside" | "blockquote" | "center" | "details" | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure" | "footer" | "header" | "hgroup" | "main" | "menu" | "nav" | "ol" | "p" | "search" | "section" | "summary" | "ul" => {
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                    parser_add_element(p);
+                },
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                    {
+                        let mut n = parser_top(p);
+                        match node_data(n) {
+                            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                                stack_pop(p.oe);
+                            },
+                            _ => {},
+                        }
+                    };
+                    parser_add_element(p);
+                },
+                "pre" | "listing" => {
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                    parser_add_element(p);
+                    p.frameset_ok.set(false);
+                },
+                "form" => {
+                    if ((p.form.get() != nil_node()) && !stack_contains(p.oe, "template")) {
+                        return true;
+                    }
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                    parser_add_element(p);
+                    if !stack_contains(p.oe, "template") {
+                        p.form.set(parser_top(p));
+                    }
+                },
+                "li" => {
+                    p.frameset_ok.set(false);
+                    {
+                        let mut i = (p.oe.len() - 1);
+                        while (i >= 0) {
+                            let mut node = p.oe.get(i);
+                            match node_data(node) {
+                                "li" => {
+                                    p.oe.truncate(i);
+                                },
+                                "address" | "div" | "p" => {
+                                    i = i - 1;
+                                    continue;
+                                },
+                                _ => {
+                                    if !is_special_element(node) {
+                                        i = i - 1;
+                                        continue;
+                                    }
+                                },
+                            }
+                            break;
+                        }
+                    };
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                    parser_add_element(p);
+                },
+                "dd" | "dt" => {
+                    p.frameset_ok.set(false);
+                    {
+                        let mut i = (p.oe.len() - 1);
+                        while (i >= 0) {
+                            let mut node = p.oe.get(i);
+                            match node_data(node) {
+                                "dd" | "dt" => {
+                                    p.oe.truncate(i);
+                                },
+                                "address" | "div" | "p" => {
+                                    i = i - 1;
+                                    continue;
+                                },
+                                _ => {
+                                    if !is_special_element(node) {
+                                        i = i - 1;
+                                        continue;
+                                    }
+                                },
+                            }
+                            break;
+                        }
+                    };
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                    parser_add_element(p);
+                },
+                "plaintext" => {
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                    parser_add_element(p);
+                },
+                "button" => {
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("button");
+                            v
+                        },
+                    ) {
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v
+                            },
+                        );
+                        parser_pop_until(
+                            p,
+                            0,
+                            {
+                                let v = Vec::new();
+                                v.push("button");
+                                v
+                            },
+                        );
+                    }
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                    p.frameset_ok.set(false);
+                },
+                "a" => {
+                    {
+                        let mut i = (p.afe.len() - 1);
+                        while ((i >= 0) && (node_type(p.afe.get(i)) != 7)) {
+                            {
+                                let mut n = p.afe.get(i);
+                                if ((node_type(n) == 3) && (node_data(n) == "a")) {
+                                    parser_in_body_end_tag_formatting(p, "a", "a");
+                                    stack_remove(p.oe, n);
+                                    stack_remove(p.afe, n);
+                                    break;
+                                }
+                            };
+                            i = i - 1;
+                        }
+                    };
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_formatting_element(p);
+                },
+                "b" | "big" | "code" | "em" | "font" | "i" | "s" | "small" | "strike" | "strong" | "tt" | "u" => {
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_formatting_element(p);
+                },
+                "nobr" => {
+                    parser_reconstruct_active_formatting_elements(p);
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("nobr");
+                            v
+                        },
+                    ) {
+                        parser_in_body_end_tag_formatting(p, "nobr", "nobr");
+                        parser_reconstruct_active_formatting_elements(p);
+                    }
+                    parser_add_formatting_element(p);
+                },
+                "applet" | "marquee" | "object" => {
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                    p.afe.push(new_node(7, "", "", Vec::new()));
+                    p.frameset_ok.set(false);
+                },
+                "table" => {
+                    if !p.quirks.get() {
+                        parser_pop_until(
+                            p,
+                            2,
+                            {
+                                let v = Vec::new();
+                                v.push("p");
+                                v
+                            },
+                        );
+                    }
+                    parser_add_element(p);
+                    p.frameset_ok.set(false);
+                    p.im.set(29);
+                    return true;
+                },
+                "area" | "br" | "embed" | "img" | "keygen" | "wbr" => {
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                    stack_pop(p.oe);
+                    parser_acknowledge_self_closing_tag(p);
+                    p.frameset_ok.set(false);
+                },
+                "input" => {
+                    if (p.fragment && (node_data(p.context) == "select")) {
+                        return true;
+                    }
+                    parser_pop_until(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("select");
+                            v
+                        },
+                    );
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                    stack_pop(p.oe);
+                    parser_acknowledge_self_closing_tag(p);
+                    if (p.tok.get().data == "input") {
+                        for t in p.tok.get().attr {
+                            if (t.name == "type") {
+                                if text::equal_fold(t.value, "hidden") {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    p.frameset_ok.set(false);
+                },
+                "param" | "source" | "track" => {
+                    parser_add_element(p);
+                    stack_pop(p.oe);
+                    parser_acknowledge_self_closing_tag(p);
+                },
+                "hr" => {
+                    if parser_element_in_scope(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    ) {
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v.push("p");
+                                v
+                            },
+                        );
+                        parser_pop_until(
+                            p,
+                            0,
+                            {
+                                let v = Vec::new();
+                                v.push("p");
+                                v
+                            },
+                        );
+                    }
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("select");
+                            v
+                        },
+                    ) {
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v
+                            },
+                        );
+                    }
+                    parser_add_element(p);
+                    stack_pop(p.oe);
+                    parser_acknowledge_self_closing_tag(p);
+                    p.frameset_ok.set(false);
+                },
+                "image" => {
+                    p.tok.set(HtmlToken { data: "img", ..p.tok.get() });
+                    return false;
+                },
+                "textarea" => {
+                    parser_add_element(p);
+                    parser_set_original_im(p);
+                    p.frameset_ok.set(false);
+                    p.im.set(28);
+                },
+                "xmp" => {
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                    parser_reconstruct_active_formatting_elements(p);
+                    p.frameset_ok.set(false);
+                    parser_parse_generic_raw_text_element(p);
+                },
+                "iframe" => {
+                    p.frameset_ok.set(false);
+                    parser_parse_generic_raw_text_element(p);
+                },
+                "noembed" => {
+                    parser_parse_generic_raw_text_element(p);
+                },
+                "noscript" => {
+                    if p.scripting {
+                        parser_parse_generic_raw_text_element(p);
+                        return true;
+                    }
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                    tokenizer_next_is_not_raw_text(p.tokenizer);
+                },
+                "select" => {
+                    if (p.fragment && (node_data(p.context) == "select")) {
+                        return true;
+                    } else if parser_pop_until(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("select");
+                            v
+                        },
+                    ) {
+                        return true;
+                    }
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                    p.frameset_ok.set(false);
+                    return true;
+                },
+                "option" => {
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("select");
+                            v
+                        },
+                    ) {
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v.push("optgroup");
+                                v
+                            },
+                        );
+                    } else if (node_data(parser_top(p)) == "option") {
+                        stack_pop(p.oe);
+                    }
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                },
+                "optgroup" => {
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("select");
+                            v
+                        },
+                    ) {
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v
+                            },
+                        );
+                    } else if (node_data(parser_top(p)) == "option") {
+                        stack_pop(p.oe);
+                    }
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                },
+                "rb" | "rtc" => {
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("ruby");
+                            v
+                        },
+                    ) {
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v
+                            },
+                        );
+                    }
+                    parser_add_element(p);
+                },
+                "rp" | "rt" => {
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("ruby");
+                            v
+                        },
+                    ) {
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v.push("rtc");
+                                v
+                            },
+                        );
+                    }
+                    parser_add_element(p);
+                },
+                "math" | "svg" => {
+                    parser_reconstruct_active_formatting_elements(p);
+                    if (p.tok.get().data == "math") {
+                        adjust_mathml_attributes(p.tok.get().attr);
+                    } else {
+                        adjust_svg_attributes(p.tok.get().attr);
+                    }
+                    adjust_foreign_attributes(p.tok.get().attr);
+                    parser_add_element(p);
+                    set_node_namespace(parser_top(p), p.tok.get().data);
+                    if p.has_self_closing_token.get() {
+                        stack_pop(p.oe);
+                        parser_acknowledge_self_closing_tag(p);
+                    }
+                    return true;
+                },
+                "caption" | "col" | "colgroup" | "frame" | "head" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr" => {},
+                _ => {
+                    parser_reconstruct_active_formatting_elements(p);
+                    parser_add_element(p);
+                },
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "body" => {
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("body");
+                            v
+                        },
+                    ) {
+                        p.im.set(36);
+                    }
+                },
+                "html" => {
+                    if parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("body");
+                            v
+                        },
+                    ) {
+                        parser_parse_implied_token(p, 3, "body", "body");
+                        return false;
+                    }
+                    return true;
+                },
+                "address" | "article" | "aside" | "blockquote" | "button" | "center" | "details" | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure" | "footer" | "header" | "hgroup" | "listing" | "main" | "menu" | "nav" | "ol" | "pre" | "search" | "section" | "select" | "summary" | "ul" => {
+                    if !parser_element_in_scope(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push(p.tok.get().data);
+                            v
+                        },
+                    ) {
+                        return true;
+                    }
+                    parser_generate_implied_end_tags(
+                        p,
+                        {
+                            let v = Vec::new();
+                            v
+                        },
+                    );
+                    parser_pop_until(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push(p.tok.get().data);
+                            v
+                        },
+                    );
+                },
+                "form" => {
+                    if stack_contains(p.oe, "template") {
+                        let mut i = parser_index_of_element_in_scope(
+                            p,
+                            0,
+                            {
+                                let v = Vec::new();
+                                v.push("form");
+                                v
+                            },
+                        );
+                        if (i == -1) {
+                            return true;
+                        }
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v
+                            },
+                        );
+                        if (node_data(p.oe.get(i)) != "form") {
+                            return true;
+                        }
+                        parser_pop_until(
+                            p,
+                            0,
+                            {
+                                let v = Vec::new();
+                                v.push("form");
+                                v
+                            },
+                        );
+                    } else {
+                        let mut node = p.form.get();
+                        p.form.set(nil_node());
+                        let mut i = parser_index_of_element_in_scope(
+                            p,
+                            0,
+                            {
+                                let v = Vec::new();
+                                v.push("form");
+                                v
+                            },
+                        );
+                        if (((node == nil_node()) || (i == -1)) || (p.oe.get(i) != node)) {
+                            return true;
+                        }
+                        parser_generate_implied_end_tags(
+                            p,
+                            {
+                                let v = Vec::new();
+                                v
+                            },
+                        );
+                        stack_remove(p.oe, node);
+                    }
+                },
+                "p" => {
+                    if !parser_element_in_scope(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    ) {
+                        parser_parse_implied_token(p, 2, "p", "p");
+                    }
+                    parser_pop_until(
+                        p,
+                        2,
+                        {
+                            let v = Vec::new();
+                            v.push("p");
+                            v
+                        },
+                    );
+                },
+                "li" => {
+                    parser_pop_until(
+                        p,
+                        1,
+                        {
+                            let v = Vec::new();
+                            v.push("li");
+                            v
+                        },
+                    );
+                },
+                "dd" | "dt" => {
+                    parser_pop_until(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push(p.tok.get().data);
+                            v
+                        },
+                    );
+                },
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    parser_pop_until(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push("h1");
+                            v.push("h2");
+                            v.push("h3");
+                            v.push("h4");
+                            v.push("h5");
+                            v.push("h6");
+                            v
+                        },
+                    );
+                },
+                "a" | "b" | "big" | "code" | "em" | "font" | "i" | "nobr" | "s" | "small" | "strike" | "strong" | "tt" | "u" => {
+                    parser_in_body_end_tag_formatting(p, p.tok.get().data, p.tok.get().data);
+                },
+                "applet" | "marquee" | "object" => {
+                    if parser_pop_until(
+                        p,
+                        0,
+                        {
+                            let v = Vec::new();
+                            v.push(p.tok.get().data);
+                            v
+                        },
+                    ) {
+                        parser_clear_active_formatting_elements(p);
+                    }
+                },
+                "br" => {
+                    p.tok.set(HtmlToken { typ: 2, ..p.tok.get() });
+                    return false;
+                },
+                "template" => {
+                    return in_head_im(p);
+                },
+                _ => {
+                    parser_in_body_end_tag_other(p, p.tok.get().data, p.tok.get().data);
+                },
+            }
+        },
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+        },
+        0 => {
+            if (p.template_stack.len() > 0) {
+                p.im.set(35);
+                return false;
+            }
+            for e in p.oe {
+                match node_data(e) {
+                    "dd" | "dt" | "li" | "optgroup" | "option" | "p" | "rb" | "rp" | "rt" | "rtc" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr" | "body" | "html" => {},
+                    _ => {
+                        return true;
+                    },
+                }
+            }
+        },
+        _ => {},
+    }
+    return true;
+}
+
+fn parser_in_body_end_tag_formatting(p: HtmlParser, tag_atom: string, tag_name: string) -> () {
+    {
+        let mut current = stack_top(p.oe);
+        if ((node_data(current) == tag_name) && (stack_index(p.afe, current) == -1)) {
+            stack_pop(p.oe);
+            return;
+        }
+    };
+    {
+        let mut i = 0;
+        while (i < 8) {
+            let mut formatting_element: RawNode = nil_node();
+            {
+                let mut j = (p.afe.len() - 1);
+                while (j >= 0) {
+                    if (node_type(p.afe.get(j)) == 7) {
+                        break;
+                    }
+                    if (node_data(p.afe.get(j)) == tag_atom) {
+                        formatting_element = p.afe.get(j);
+                        break;
+                    }
+                    j = j - 1;
+                }
+            };
+            if (formatting_element == nil_node()) {
+                parser_in_body_end_tag_other(p, tag_atom, tag_name);
+                return;
+            }
+            let mut fe_index = stack_index(p.oe, formatting_element);
+            if (fe_index == -1) {
+                stack_remove(p.afe, formatting_element);
+                return;
+            }
+            if !parser_element_in_scope(
+                p,
+                0,
+                {
+                    let v = Vec::new();
+                    v.push(tag_atom);
+                    v
+                },
+            ) {
+                return;
+            }
+            let mut furthest_block: RawNode = nil_node();
+            for e in p.oe.as_slice().sub(fe_index, p.oe.len()) {
+                if is_special_element(e) {
+                    furthest_block = e;
+                    break;
+                }
+            }
+            if (furthest_block == nil_node()) {
+                let mut e = stack_pop(p.oe);
+                while (e != formatting_element) {
+                    e = stack_pop(p.oe);
+                }
+                stack_remove(p.afe, e);
+                return;
+            }
+            let mut common_ancestor = p.oe.get((fe_index - 1));
+            let mut bookmark = stack_index(p.afe, formatting_element);
+            let mut last_node = furthest_block;
+            let mut node = furthest_block;
+            let mut x = stack_index(p.oe, node);
+            let mut j = 0;
+            while true {
+                j = j + 1;
+                x = x - 1;
+                node = p.oe.get(x);
+                if (node == formatting_element) {
+                    break;
+                }
+                {
+                    let mut ni = stack_index(p.afe, node);
+                    if ((j > 3) && (ni > -1)) {
+                        stack_remove(p.afe, node);
+                        if (ni <= bookmark) {
+                            bookmark = bookmark - 1;
+                        }
+                        continue;
+                    }
+                };
+                if (stack_index(p.afe, node) == -1) {
+                    stack_remove(p.oe, node);
+                    continue;
+                }
+                let mut clone = node_clone(node);
+                p.afe.set(stack_index(p.afe, node), clone);
+                p.oe.set(stack_index(p.oe, node), clone);
+                node = clone;
+                if (last_node == furthest_block) {
+                    bookmark = (stack_index(p.afe, node) + 1);
+                }
+                if (node_parent(last_node) != nil_node()) {
+                    node_remove_child(node_parent(last_node), last_node);
+                }
+                node_append_child(node, last_node);
+                last_node = node;
+            }
+            if (node_parent(last_node) != nil_node()) {
+                node_remove_child(node_parent(last_node), last_node);
+            }
+            match node_data(common_ancestor) {
+                "table" | "tbody" | "tfoot" | "thead" | "tr" => {
+                    parser_foster_parent(p, last_node);
+                },
+                _ => {
+                    node_append_child(common_ancestor, last_node);
+                },
+            }
+            let mut clone = node_clone(formatting_element);
+            reparent_children(clone, furthest_block);
+            node_append_child(furthest_block, clone);
+            {
+                let mut old_loc = stack_index(p.afe, formatting_element);
+                if ((old_loc != -1) && (old_loc < bookmark)) {
+                    bookmark = bookmark - 1;
+                }
+            };
+            stack_remove(p.afe, formatting_element);
+            stack_insert(p.afe, bookmark, clone);
+            stack_remove(p.oe, formatting_element);
+            stack_insert(p.oe, (stack_index(p.oe, furthest_block) + 1), clone);
+            i = i + 1;
+        }
+    };
+}
+
+fn parser_in_body_end_tag_other(p: HtmlParser, tag_atom: string, tag_name: string) -> () {
+    {
+        let mut i = (p.oe.len() - 1);
+        while (i >= 0) {
+            if (((node_namespace(p.oe.get(i)) == "") && ((node_data(p.oe.get(i)) == tag_atom)))
+                && ((((tag_atom != "")) || ((node_data(p.oe.get(i)) == tag_name))))) {
+                p.oe.truncate(i);
+                break;
+            }
+            if is_special_element(p.oe.get(i)) {
+                break;
+            }
+            i = i - 1;
+        }
+    };
+}
+
+fn text_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        0 => {
+            stack_pop(p.oe);
+        },
+        1 => {
+            let mut d = p.tok.get().data;
+            {
+                let mut n = stack_top(p.oe);
+                if ((node_data(n) == "textarea") && (node_first_child(n) == nil_node())) {
+                    if ((d != "") && (d.byte_get(0) == b'\r')) {
+                        d = d.byte_slice(1, d.byte_len());
+                    }
+                    if ((d != "") && (d.byte_get(0) == b'\n')) {
+                        d = d.byte_slice(1, d.byte_len());
+                    }
+                }
+            };
+            if (d == "") {
+                return true;
+            }
+            parser_add_text(p, d);
+            return true;
+        },
+        3 => {
+            stack_pop(p.oe);
+        },
+        _ => {},
+    }
+    p.im.set(p.original_im.get());
+    p.original_im.set(-1);
+    return (p.tok.get().typ == 3);
+}
+
+fn in_table_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 => {
+            p.tok.set(
+                HtmlToken { data: text::replace(p.tok.get().data, "\u0000", ""), ..p.tok.get() },
+            );
+            match node_data(stack_top(p.oe)) {
+                "table" | "tbody" | "tfoot" | "thead" | "tr" => {
+                    if (text::trim_chars(p.tok.get().data, " \t\r\n\u000c") == "") {
+                        parser_add_text(p, p.tok.get().data);
+                        return true;
+                    }
+                },
+                _ => {},
+            }
+        },
+        2 => {
+            match p.tok.get().data {
+                "caption" => {
+                    parser_clear_stack_to_context(p, 3);
+                    p.afe.push(new_node(7, "", "", Vec::new()));
+                    parser_add_element(p);
+                    p.im.set(30);
+                    return true;
+                },
+                "colgroup" => {
+                    parser_clear_stack_to_context(p, 3);
+                    parser_add_element(p);
+                    p.im.set(31);
+                    return true;
+                },
+                "col" => {
+                    parser_parse_implied_token(p, 2, "colgroup", "colgroup");
+                    return false;
+                },
+                "tbody" | "tfoot" | "thead" => {
+                    parser_clear_stack_to_context(p, 3);
+                    parser_add_element(p);
+                    p.im.set(32);
+                    return true;
+                },
+                "td" | "th" | "tr" => {
+                    parser_parse_implied_token(p, 2, "tbody", "tbody");
+                    return false;
+                },
+                "table" => {
+                    if parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("table");
+                            v
+                        },
+                    ) {
+                        parser_reset_insertion_mode(p);
+                        return false;
+                    }
+                    return true;
+                },
+                "style" | "script" | "template" => {
+                    return in_head_im(p);
+                },
+                "input" => {
+                    for t in p.tok.get().attr {
+                        if ((t.name == "type") && text::equal_fold(t.value, "hidden")) {
+                            parser_add_element(p);
+                            stack_pop(p.oe);
+                            return true;
+                        }
+                    }
+                },
+                "form" => {
+                    if (stack_contains(p.oe, "template") || (p.form.get() != nil_node())) {
+                        return true;
+                    }
+                    parser_add_element(p);
+                    p.form.set(stack_pop(p.oe));
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "table" => {
+                    if parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("table");
+                            v
+                        },
+                    ) {
+                        parser_reset_insertion_mode(p);
+                        return true;
+                    }
+                    return true;
+                },
+                "body" | "caption" | "col" | "colgroup" | "html" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr" => {
+                    return true;
+                },
+                "template" => {
+                    return in_head_im(p);
+                },
+                _ => {},
+            }
+        },
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        6 => {
+            return true;
+        },
+        0 => {
+            return in_body_im(p);
+        },
+        _ => {},
+    }
+    p.foster_parenting.set(true);
+    defer {
+        p.foster_parenting.set(false);
+    };
+    return in_body_im(p);
+}
+
+fn in_caption_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        2 => {
+            match p.tok.get().data {
+                "caption" | "col" | "colgroup" | "tbody" | "td" | "tfoot" | "thead" | "tr" => {
+                    if !parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("caption");
+                            v
+                        },
+                    ) {
+                        return true;
+                    }
+                    parser_clear_active_formatting_elements(p);
+                    p.im.set(29);
+                    return false;
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "caption" => {
+                    if parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("caption");
+                            v
+                        },
+                    ) {
+                        parser_clear_active_formatting_elements(p);
+                        p.im.set(29);
+                    }
+                    return true;
+                },
+                "table" => {
+                    if !parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("caption");
+                            v
+                        },
+                    ) {
+                        return true;
+                    }
+                    parser_clear_active_formatting_elements(p);
+                    p.im.set(29);
+                    return false;
+                },
+                "body" | "col" | "colgroup" | "html" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr" => {
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        _ => {},
+    }
+    return in_body_im(p);
+}
+
+fn in_column_group_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 => {
+            let mut s = text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c");
+            if (s.byte_len() < p.tok.get().data.byte_len()) {
+                parser_add_text(
+                    p,
+                    p.tok.get().data.byte_slice(0, (p.tok.get().data.byte_len() - s.byte_len())),
+                );
+                if (s == "") {
+                    return true;
+                }
+                p.tok.set(HtmlToken { data: s, ..p.tok.get() });
+            }
+        },
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        6 => {
+            return true;
+        },
+        2 => {
+            match p.tok.get().data {
+                "html" => {
+                    return in_body_im(p);
+                },
+                "col" => {
+                    parser_add_element(p);
+                    stack_pop(p.oe);
+                    parser_acknowledge_self_closing_tag(p);
+                    return true;
+                },
+                "template" => {
+                    return in_head_im(p);
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "colgroup" => {
+                    if (node_data(stack_top(p.oe)) == "colgroup") {
+                        stack_pop(p.oe);
+                        p.im.set(29);
+                    }
+                    return true;
+                },
+                "col" => {
+                    return true;
+                },
+                "template" => {
+                    return in_head_im(p);
+                },
+                _ => {},
+            }
+        },
+        0 => {
+            return in_body_im(p);
+        },
+        _ => {},
+    }
+    if (node_data(stack_top(p.oe)) != "colgroup") {
+        return true;
+    }
+    stack_pop(p.oe);
+    p.im.set(29);
+    return false;
+}
+
+fn in_table_body_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        2 => {
+            match p.tok.get().data {
+                "tr" => {
+                    parser_clear_stack_to_context(p, 5);
+                    parser_add_element(p);
+                    p.im.set(33);
+                    return true;
+                },
+                "td" | "th" => {
+                    parser_parse_implied_token(p, 2, "tr", "tr");
+                    return false;
+                },
+                "caption" | "col" | "colgroup" | "tbody" | "tfoot" | "thead" => {
+                    if parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("tbody");
+                            v.push("thead");
+                            v.push("tfoot");
+                            v
+                        },
+                    ) {
+                        p.im.set(29);
+                        return false;
+                    }
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "tbody" | "tfoot" | "thead" => {
+                    if parser_element_in_scope(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push(p.tok.get().data);
+                            v
+                        },
+                    ) {
+                        parser_clear_stack_to_context(p, 5);
+                        stack_pop(p.oe);
+                        p.im.set(29);
+                    }
+                    return true;
+                },
+                "table" => {
+                    if parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("tbody");
+                            v.push("thead");
+                            v.push("tfoot");
+                            v
+                        },
+                    ) {
+                        p.im.set(29);
+                        return false;
+                    }
+                    return true;
+                },
+                "body" | "caption" | "col" | "colgroup" | "html" | "td" | "th" | "tr" => {
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        _ => {},
+    }
+    return in_table_im(p);
+}
+
+fn in_row_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        2 => {
+            match p.tok.get().data {
+                "td" | "th" => {
+                    parser_clear_stack_to_context(p, 4);
+                    parser_add_element(p);
+                    p.afe.push(new_node(7, "", "", Vec::new()));
+                    p.im.set(34);
+                    return true;
+                },
+                "caption" | "col" | "colgroup" | "tbody" | "tfoot" | "thead" | "tr" => {
+                    if parser_element_in_scope(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("tr");
+                            v
+                        },
+                    ) {
+                        parser_clear_stack_to_context(p, 4);
+                        stack_pop(p.oe);
+                        p.im.set(32);
+                        return false;
+                    }
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "tr" => {
+                    if parser_element_in_scope(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("tr");
+                            v
+                        },
+                    ) {
+                        parser_clear_stack_to_context(p, 4);
+                        stack_pop(p.oe);
+                        p.im.set(32);
+                        return true;
+                    }
+                    return true;
+                },
+                "table" => {
+                    if parser_element_in_scope(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("tr");
+                            v
+                        },
+                    ) {
+                        parser_clear_stack_to_context(p, 4);
+                        stack_pop(p.oe);
+                        p.im.set(32);
+                        return false;
+                    }
+                    return true;
+                },
+                "tbody" | "tfoot" | "thead" => {
+                    if (parser_element_in_scope(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push(p.tok.get().data);
+                            v
+                        },
+                    )
+                        && parser_element_in_scope(
+                            p,
+                            3,
+                            {
+                                let v = Vec::new();
+                                v.push("tr");
+                                v
+                            },
+                        )) {
+                        parser_clear_stack_to_context(p, 4);
+                        stack_pop(p.oe);
+                        p.im.set(32);
+                        return false;
+                    }
+                    return true;
+                },
+                "body" | "caption" | "col" | "colgroup" | "html" | "td" | "th" => {
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        _ => {},
+    }
+    return in_table_im(p);
+}
+
+fn in_cell_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        2 => {
+            match p.tok.get().data {
+                "caption" | "col" | "colgroup" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr" => {
+                    if parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("td");
+                            v.push("th");
+                            v
+                        },
+                    ) {
+                        parser_clear_active_formatting_elements(p);
+                        p.im.set(33);
+                        return false;
+                    }
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "td" | "th" => {
+                    if !parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push(p.tok.get().data);
+                            v
+                        },
+                    ) {
+                        return true;
+                    }
+                    parser_clear_active_formatting_elements(p);
+                    p.im.set(33);
+                    return true;
+                },
+                "body" | "caption" | "col" | "colgroup" | "html" => {
+                    return true;
+                },
+                "table" | "tbody" | "tfoot" | "thead" | "tr" => {
+                    if !parser_element_in_scope(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push(p.tok.get().data);
+                            v
+                        },
+                    ) {
+                        return true;
+                    }
+                    if parser_pop_until(
+                        p,
+                        3,
+                        {
+                            let v = Vec::new();
+                            v.push("td");
+                            v.push("th");
+                            v
+                        },
+                    ) {
+                        parser_clear_active_formatting_elements(p);
+                    }
+                    p.im.set(33);
+                    return false;
+                },
+                _ => {},
+            }
+        },
+        _ => {},
+    }
+    return in_body_im(p);
+}
+
+fn in_template_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 | 5 | 6 => {
+            return in_body_im(p);
+        },
+        2 => {
+            match p.tok.get().data {
+                "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "script" | "style" | "template" | "title" => {
+                    return in_head_im(p);
+                },
+                "caption" | "colgroup" | "tbody" | "tfoot" | "thead" => {
+                    mode_pop(p.template_stack);
+                    p.template_stack.push(29);
+                    p.im.set(29);
+                    return false;
+                },
+                "col" => {
+                    mode_pop(p.template_stack);
+                    p.template_stack.push(31);
+                    p.im.set(31);
+                    return false;
+                },
+                "tr" => {
+                    mode_pop(p.template_stack);
+                    p.template_stack.push(32);
+                    p.im.set(32);
+                    return false;
+                },
+                "td" | "th" => {
+                    mode_pop(p.template_stack);
+                    p.template_stack.push(33);
+                    p.im.set(33);
+                    return false;
+                },
+                _ => {
+                    mode_pop(p.template_stack);
+                    p.template_stack.push(25);
+                    p.im.set(25);
+                    return false;
+                },
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "template" => {
+                    return in_head_im(p);
+                },
+                _ => {
+                    return true;
+                },
+            }
+        },
+        0 => {
+            if !stack_contains(p.oe, "template") {
+                return true;
+            }
+            parser_generate_implied_end_tags(
+                p,
+                {
+                    let v = Vec::new();
+                    v
+                },
+            );
+            {
+                let mut i = (p.oe.len() - 1);
+                while (i >= 0) {
+                    {
+                        let mut n = p.oe.get(i);
+                        if ((node_namespace(n) == "") && (node_data(n) == "template")) {
+                            p.oe.truncate(i);
+                            break;
+                        }
+                    };
+                    i = i - 1;
+                }
+            };
+            parser_clear_active_formatting_elements(p);
+            mode_pop(p.template_stack);
+            parser_reset_insertion_mode(p);
+            return false;
+        },
+        _ => {},
+    }
+    return false;
+}
+
+fn after_body_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        0 => {
+            return true;
+        },
+        1 => {
+            let mut s = text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c");
+            if (s.byte_len() == 0) {
+                return in_body_im(p);
+            }
+        },
+        2 => {
+            if (p.tok.get().data == "html") {
+                return in_body_im(p);
+            }
+        },
+        3 => {
+            if (p.tok.get().data == "html") {
+                if !p.fragment {
+                    p.im.set(39);
+                }
+                return true;
+            }
+        },
+        5 => {
+            if ((p.oe.len() < 1) || (node_data(p.oe.get(0)) != "html")) {
+                p.failed.set(true);
+            }
+            node_append_child(p.oe.get(0), new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        _ => {},
+    }
+    p.im.set(25);
+    return false;
+}
+
+fn in_frameset_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+        },
+        1 => {
+            let mut s = only_whitespace(p.tok.get().data);
+            if (s != "") {
+                parser_add_text(p, s);
+            }
+        },
+        2 => {
+            match p.tok.get().data {
+                "html" => {
+                    return in_body_im(p);
+                },
+                "frameset" => {
+                    parser_add_element(p);
+                },
+                "frame" => {
+                    parser_add_element(p);
+                    stack_pop(p.oe);
+                    parser_acknowledge_self_closing_tag(p);
+                },
+                "noframes" => {
+                    return in_head_im(p);
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "frameset" => {
+                    if (node_data(stack_top(p.oe)) != "html") {
+                        stack_pop(p.oe);
+                        if p.oe.len() == 0 {
+                            p.failed.set(true);
+                            return true;
+                        }
+                        if (node_data(stack_top(p.oe)) != "frameset") {
+                            p.im.set(38);
+                            return true;
+                        }
+                    }
+                },
+                _ => {},
+            }
+        },
+        _ => {},
+    }
+    return true;
+}
+
+fn after_frameset_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+        },
+        1 => {
+            let mut s = only_whitespace(p.tok.get().data);
+            if (s != "") {
+                parser_add_text(p, s);
+            }
+        },
+        2 => {
+            match p.tok.get().data {
+                "html" => {
+                    return in_body_im(p);
+                },
+                "noframes" => {
+                    return in_head_im(p);
+                },
+                _ => {},
+            }
+        },
+        3 => {
+            match p.tok.get().data {
+                "html" => {
+                    p.im.set(40);
+                    return true;
+                },
+                _ => {},
+            }
+        },
+        _ => {},
+    }
+    return true;
+}
+
+fn after_after_body_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        0 => {
+            return true;
+        },
+        1 => {
+            let mut s = text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c");
+            if (s.byte_len() == 0) {
+                return in_body_im(p);
+            }
+        },
+        2 => {
+            if (p.tok.get().data == "html") {
+                return in_body_im(p);
+            }
+        },
+        5 => {
+            node_append_child(p.doc, new_node(4, p.tok.get().data, "", Vec::new()));
+            return true;
+        },
+        6 => {
+            return in_body_im(p);
+        },
+        _ => {},
+    }
+    p.im.set(25);
+    return false;
+}
+
+fn after_after_frameset_im(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        5 => {
+            node_append_child(p.doc, new_node(4, p.tok.get().data, "", Vec::new()));
+        },
+        1 => {
+            let mut s = only_whitespace(p.tok.get().data);
+            if (s != "") {
+                p.tok.set(HtmlToken { data: s, ..p.tok.get() });
+                return in_body_im(p);
+            }
+        },
+        2 => {
+            match p.tok.get().data {
+                "html" => {
+                    return in_body_im(p);
+                },
+                "noframes" => {
+                    return in_head_im(p);
+                },
+                _ => {},
+            }
+        },
+        6 => {
+            return in_body_im(p);
+        },
+        _ => {},
+    }
+    return true;
+}
+
+fn ignore_the_remaining_tokens(p: HtmlParser) -> bool {
+    return true;
+}
+
+fn parse_foreign_content(p: HtmlParser) -> bool {
+    match p.tok.get().typ {
+        1 => {
+            if p.frameset_ok.get() {
+                p.frameset_ok.set(
+                    (text::trim_start_chars(p.tok.get().data, " \t\r\n\u000c\u0000") == ""),
+                );
+            }
+            p.tok.set(
+                HtmlToken {
+                    data: text::replace(p.tok.get().data, "\u0000", "\ufffd"),
+                    ..p.tok.get(),
+                },
+            );
+            parser_add_text(p, p.tok.get().data);
+        },
+        5 => {
+            parser_add_child(p, new_node(4, p.tok.get().data, "", Vec::new()));
+        },
+        2 => {
+            let mut b = foreign_breakout(p.tok.get().data);
+            if (p.tok.get().data == "font") {
+                'loop: for attr in p.tok.get().attr {
+                    match attr.name {
+                        "color" | "face" | "size" => {
+                            b = true;
+                            break 'loop;
+                        },
+                        _ => {},
+                    }
+                };
+            }
+            if b {
+                {
+                    let mut i = (p.oe.len() - 1);
+                    while (i >= 0) {
+                        let mut n = p.oe.get(i);
+                        if (((node_namespace(n) == "") || node_html_integration_point(n))
+                            || node_mathml_text_integration_point(n)) {
+                            p.oe.truncate((i + 1));
+                            break;
+                        }
+                        i = i - 1;
+                    }
+                };
+                return run_insertion_mode(p.im.get(), p);
+            }
+            let mut current = parser_adjusted_current_node(p);
+            match node_namespace(current) {
+                "math" => {
+                    adjust_mathml_attributes(p.tok.get().attr);
+                },
+                "svg" => {
+                    {
+                        let mut x = adjust_svg_tag_name(p.tok.get().data);
+                        if (x != "") {
+                            p.tok.set(HtmlToken { data: x, ..p.tok.get() });
+                        }
+                    };
+                    adjust_svg_attributes(p.tok.get().attr);
+                },
+                _ => {
+                    p.failed.set(true);
+                },
+            }
+            adjust_foreign_attributes(p.tok.get().attr);
+            let mut namespace = node_namespace(current);
+            parser_add_element(p);
+            set_node_namespace(parser_top(p), namespace);
+            if (namespace != "") {
+                tokenizer_next_is_not_raw_text(p.tokenizer);
+            }
+            if p.has_self_closing_token.get() {
+                stack_pop(p.oe);
+                parser_acknowledge_self_closing_tag(p);
+            }
+        },
+        3 => {
+            if text::equal_fold(node_data(p.oe.get((p.oe.len() - 1))), p.tok.get().data) {
+                p.oe.truncate((p.oe.len() - 1));
+                return true;
+            }
+            {
+                let mut i = (p.oe.len() - 1);
+                while (i >= 0) {
+                    if text::equal_fold(node_data(p.oe.get(i)), p.tok.get().data) {
+                        p.oe.truncate(i);
+                        return true;
+                    }
+                    if ((i > 0) && (node_namespace(p.oe.get((i - 1))) == "")) {
+                        break;
+                    }
+                    i = i - 1;
+                }
+            };
+            return run_insertion_mode(p.im.get(), p);
+        },
+        _ => {},
+    }
+    return true;
+}
+
+fn parser_adjusted_current_node(p: HtmlParser) -> RawNode {
+    if (((p.oe.len() == 1) && p.fragment) && (p.context != nil_node())) {
+        return p.context;
+    }
+    return stack_top(p.oe);
+}
+
+fn parser_in_foreign_content(p: HtmlParser) -> bool {
+    if (p.oe.len() == 0) {
+        return false;
+    }
+    let mut n = parser_adjusted_current_node(p);
+    if (node_namespace(n) == "") {
+        return false;
+    }
+    if node_mathml_text_integration_point(n) {
+        if (((p.tok.get().typ == 2) && (p.tok.get().data != "mglyph"))
+            && (p.tok.get().data != "malignmark")) {
+            return false;
+        }
+        if (p.tok.get().typ == 1) {
+            return false;
+        }
+    }
+    if ((((node_namespace(n) == "math") && (node_data(n) == "annotation-xml"))
+        && (p.tok.get().typ == 2))
+        && (p.tok.get().data == "svg")) {
+        return false;
+    }
+    if (node_html_integration_point(n) && (((p.tok.get().typ == 2) || (p.tok.get().typ == 1)))) {
+        return false;
+    }
+    if (p.tok.get().typ == 0) {
+        return false;
+    }
+    return true;
+}
+
+fn parser_parse_implied_token(p: HtmlParser, t: isize, data_atom: string, data: string) -> () {
+    let mut real_token = p.tok.get();
+    let mut self_closing = p.has_self_closing_token.get();
+    p.tok.set(HtmlToken { typ: t, data: data, attr: Vec::new() });
+    p.has_self_closing_token.set(false);
+    parser_parse_current_token(p);
+    p.tok.set(real_token);
+    p.has_self_closing_token.set(self_closing);
+}
+
+fn parser_parse_current_token(p: HtmlParser) -> () {
+    if (p.tok.get().typ == 4) {
+        p.has_self_closing_token.set(true);
+        p.tok.set(HtmlToken { typ: 2, ..p.tok.get() });
+    }
+    let mut consumed = false;
+    while !consumed && !p.failed.get() {
+        if parser_in_foreign_content(p) {
+            consumed = parse_foreign_content(p);
+        } else {
+            consumed = run_insertion_mode(p.im.get(), p);
+        }
+    }
+    if p.has_self_closing_token.get() {
+        p.has_self_closing_token.set(false);
+    }
+}
+
+fn run_insertion_mode(mode: isize, p: HtmlParser) -> bool {
+    match mode {
+        19 => initial_im(p),
+        20 => before_htmlim(p),
+        21 => before_head_im(p),
+        22 => in_head_im(p),
+        23 => in_head_noscript_im(p),
+        24 => after_head_im(p),
+        25 => in_body_im(p),
+        28 => text_im(p),
+        29 => in_table_im(p),
+        30 => in_caption_im(p),
+        31 => in_column_group_im(p),
+        32 => in_table_body_im(p),
+        33 => in_row_im(p),
+        34 => in_cell_im(p),
+        35 => in_template_im(p),
+        36 => after_body_im(p),
+        37 => in_frameset_im(p),
+        38 => after_frameset_im(p),
+        39 => after_after_body_im(p),
+        40 => after_after_frameset_im(p),
+        41 => ignore_the_remaining_tokens(p),
+        _ => {
+            p.failed.set(true);
+            true
+        },
+    }
+}
