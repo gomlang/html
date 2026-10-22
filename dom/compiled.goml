@@ -1,0 +1,58 @@
+package dom;
+
+pub struct Selector {
+    source: string,
+    group: Vec[CssSelector],
+}
+
+impl Selector {
+    pub fn compile(query: string, max_bytes: isize) -> Result[Selector, Error] {
+        css_validate_query(query, max_bytes)?;
+        Ok(Selector { source: query, group: css_parse_query(query)? })
+    }
+
+    fn admit(self: Selector, node: Node, single: bool) -> Result[(), Error] {
+        css_validate_query(self.source, node.limits.max_selector_bytes)?;
+        css_admit(self.source, node.stats, single)
+    }
+}
+
+impl Node {
+    pub fn matches_compiled(self: Node, selector: Selector) -> Result[bool, Error] {
+        selector.admit(self, true)?;
+        css_group_match(self, selector.group, Ref::new(0))
+    }
+
+    pub fn select_compiled(self: Node, selector: Selector) -> Result[Vec[Node], Error] {
+        self.compiled_selection(selector, false)
+    }
+
+    pub fn select_first_compiled(self: Node, selector: Selector) -> Result[Option[Node], Error] {
+        let nodes = self.compiled_selection(selector, true)?;
+        if nodes.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(nodes[0]))
+        }
+    }
+
+    fn compiled_selection(self: Node, selector: Selector, first: bool) -> Result[Vec[Node], Error] {
+        if self.limits.max_matches < 0 {
+            return Err(
+                Error { kind: ErrorKind::InvalidLimits, message: "negative selector match limit" },
+            )
+        }
+        selector.admit(self, false)?;
+        select_group(self, selector.group, first)
+    }
+}
+
+impl Document {
+    pub fn select_compiled(self: Document, selector: Selector) -> Result[Vec[Node], Error] {
+        self.root.select_compiled(selector)
+    }
+
+    pub fn select_first_compiled(self: Document, selector: Selector) -> Result[Option[Node], Error] {
+        self.root.select_first_compiled(selector)
+    }
+}

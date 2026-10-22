@@ -588,18 +588,27 @@ impl CssParser {
 }
 
 fn css_compile(node: Node, query: string, single: bool) -> Result[Vec[CssSelector], Error] {
-    if node.limits.max_selector_bytes < 0 {
+    css_validate_query(query, node.limits.max_selector_bytes)?;
+    css_admit(query, node.stats, single)?;
+    css_parse_query(query)
+}
+
+fn css_validate_query(query: string, max_bytes: isize) -> Result[(), Error] {
+    if max_bytes < 0 {
         return Err(
             Error { kind: ErrorKind::InvalidLimits, message: "negative selector byte limit" },
         )
     }
-    if query.byte_len() > node.limits.max_selector_bytes || query.byte_len() > 4096 {
+    if query.byte_len() > max_bytes || query.byte_len() > 4096 {
         return Err(css_error("CSS selector exceeds byte limit (hard maximum 4096)"))
     }
     if utf8::validate(query.to_bytes().as_slice()).is_err() {
         return Err(css_error("CSS selector is not UTF-8"))
     }
-    css_admit(query, node.stats, single)?;
+    Ok(())
+}
+
+fn css_parse_query(query: string) -> Result[Vec[CssSelector], Error] {
     let parser = CssParser { source: query, position: Ref::new(0) };
     let group = parser.group(0)?;
     if parser.position.get() != query.byte_len() {
@@ -1027,6 +1036,10 @@ fn select_nodes(node: Node, selector: string, first: bool) -> Result[Vec[Node], 
         )
     }
     let group = css_compile(node, selector, false)?;
+    select_group(node, group, first)
+}
+
+fn select_group(node: Node, group: Vec[CssSelector], first: bool) -> Result[Vec[Node], Error] {
     let work = Ref::new(0);
     let result = Vec::new();
     let mut current = node.first_child();

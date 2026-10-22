@@ -253,3 +253,11 @@ goml test
 ```
 
 `goml test` builds the example and runs its tests. `(cd ../workflows && just ecosystem-test html)` runs the library-specific smoke and compatibility checks.
+
+`dom::Selector::compile(query, max_bytes)` validates and parses a bounded CSS
+selector once using the GoML selector engine. Reuse it with
+`Node.matches_compiled`, `Node.select_compiled`, `Node.select_first_compiled`,
+or the document selection equivalents. Selectors are immutable and reusable
+across documents. Each execution rechecks the target's selector byte limit,
+structural-work admission and match limit. Compilation does not admit a query
+against a future large tree.

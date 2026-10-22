@@ -1,0 +1,112 @@
+package tests;
+
+use ecosystem::html::dom;
+use std::testing;
+use std::task;
+
+#[test]
+fn compiled_selectors_reuse_parsing_and_preserve_target_limits() -> () {
+    let query = "li.item";
+    let selector = testing::expect_ok(dom::Selector::compile(query, 100), "compile");
+    for source in[
+        "<ul><li class=item>A</li><li>B</li></ul>",
+        "<ol><li class=item>C</li><li class=item>D</li></ol>",
+    ] {
+        let document = testing::expect_ok(
+            dom::parse_fragment(source, "div", dom::Limits::standard()),
+            "parse",
+        );
+        let normal = testing::expect_ok(document.select(query), "string");
+        let compiled = testing::expect_ok(document.select_compiled(selector), "compiled");
+        testing::assert_eq(compiled.len(), normal.len());
+        for i in 0..normal.len() {
+            testing::assert_eq(
+                testing::expect_ok(compiled[i].text(), "text"),
+                testing::expect_ok(normal[i].text(), "reference text"),
+            );
+            testing::assert(testing::expect_ok(compiled[i].matches_compiled(selector), "match"));
+        }
+        testing::assert(
+            testing::expect_ok(document.select_first_compiled(selector), "first").is_some(),
+        );
+    }
+    testing::assert_err(dom::Selector::compile("[", 100));
+    testing::assert_err(dom::Selector::compile(query, query.byte_len() - 1));
+    let limited = testing::expect_ok(
+        dom::parse_fragment(
+            "<li class=item>A</li><li class=item>B</li>",
+            "div",
+            dom::Limits { max_matches: 1, ..dom::Limits::standard() },
+        ),
+        "limited",
+    );
+    testing::assert_err(limited.select_compiled(selector));
+    testing::assert(
+        testing::expect_ok(limited.select_first_compiled(selector), "first limit").is_some(),
+    );
+    let narrow = testing::expect_ok(
+        dom::parse_fragment(
+            "<li class=item>A</li>",
+            "div",
+            dom::Limits { max_selector_bytes: 1, ..dom::Limits::standard() },
+        ),
+        "narrow",
+    );
+    testing::assert_err(narrow.select_compiled(selector));
+    let deep = testing::expect_ok(
+        dom::parse_fragment(
+            "<div>".repeat(40) + "leaf" + "</div>".repeat(40),
+            "div",
+            dom::Limits::standard(),
+        ),
+        "deep",
+    );
+    let expensive = testing::expect_ok(
+        dom::Selector::compile("absent" + " div".repeat(20), 4096),
+        "compile independently of tree",
+    );
+    testing::assert_eq(
+        testing::expect_err(deep.select_compiled(expensive), "work").kind,
+        dom::ErrorKind::SelectorWorkLimit,
+    );
+}
+
+#[test]
+fn compiled_selector_can_be_shared_by_concurrent_documents() -> () {
+    let selector = testing::expect_ok(
+        dom::Selector::compile("ul > li.item:not(.skip)", 100),
+        "compile",
+    );
+    task::scope(
+        |scope| {
+            let jobs = Vec::new();
+            for _ in 0..8 {
+                jobs.push(
+                    scope.spawn(
+                        |_| {
+                            for _ in 0..20 {
+                                let document = testing::expect_ok(
+                                    dom::parse_fragment(
+                                        "<ul><li class=item>A</li><li class='item skip'>B</li></ul>",
+                                        "div",
+                                        dom::Limits::standard(),
+                                    ),
+                                    "parse",
+                                );
+                                let nodes = testing::expect_ok(
+                                    document.select_compiled(selector),
+                                    "select",
+                                );
+                                testing::assert_eq(nodes.len(), 1);
+                                testing::assert_eq(testing::expect_ok(nodes[0].text(), "text"), "A");
+                            }
+                        },
+                    ),
+                );
+            }
+            for job in jobs {
+                job.join();
+            }
+        },
+    );
+}
